@@ -28,7 +28,7 @@ from qiskit.circuit.random import random_circuit
 from qiskit.compiler.transpiler import transpile
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.providers.fake_provider import GenericBackendV2
-from qiskit.transpiler.passes import SabreSwap, CheckMap
+from qiskit.transpiler.passes import SabreSwap, CheckMap, ConsolidateBlocks, UnitarySynthesis
 from qiskit.transpiler.passes.routing.sabre_swap import Heuristic, SetScaling
 from qiskit.transpiler import CouplingMap, Layout, PassManager, Target, TranspilerError
 from qiskit import ClassicalRegister, QuantumRegister, QuantumCircuit
@@ -268,7 +268,9 @@ class TestSabreSwap(QiskitTestCase):
         pm = PassManager(SabreSwap(coupling, "lookahead"))
         new_qc = pm.run(qc)
 
-        self.assertEqual(new_qc.num_nonlocal_gates(), 7)
+        # Two swaps rather than one: the first swap fuses with `cx(1, 2)`, which is cheaper in
+        # native gates (8 CX after 2q-block resynthesis, instead of 9 for the single-swap routing).
+        self.assertEqual(new_qc.num_nonlocal_gates(), 8)
 
     def test_do_not_change_cm(self):
         """Coupling map should not change.
@@ -385,6 +387,76 @@ class TestSabreSwap(QiskitTestCase):
 
         # Check that a re-run with the same seed produces the same circuit in the exact same order.
         self.assertEqual(normalize_nodes(dag_0), normalize_nodes(pass_0.run(dag)))
+
+    @ddt.data("basic", "lookahead", "decay")
+    def test_equal_score_swaps_prefer_idle_wires(self, heuristic):
+        """Test that, among equally scored swaps, Sabre picks the one whose qubits are free
+        earliest in the two-qubit schedule, so the swap runs in parallel with earlier gates."""
+        # On the line 0-1-2-3, qubit 1 is busy with a chain of gates when `cx(1, 3)` needs routing.
+        # Swapping on (1, 2) or on (2, 3) scores the same, but only (2, 3) is on idle qubits.
+        qc = QuantumCircuit(4)
+        for _ in range(4):
+            qc.cx(0, 1)
+        qc.cx(1, 3)
+        coupling = CouplingMap.from_line(4)
+        for seed in range(10):
+            routed = SabreSwap(coupling, heuristic, seed=seed, trials=1)(qc)
+            self.assertEqual(routed.count_ops()["swap"], 1)
+            swap = next(inst for inst in routed.data if inst.operation.name == "swap")
+            self.assertEqual({routed.find_bit(q).index for q in swap.qubits}, {2, 3})
+            self.assertEqual(routed.depth(lambda inst: inst.operation.num_qubits == 2), 5)
+
+    def test_wire_ready_time_is_priced_against_lookahead(self):
+        """Test that the time a swap waits for its wires is a priced score term, not only a
+        tie-break: it outweighs a small lookahead difference, but not a large one."""
+        # On the line 0-1-2-3-4 with a spur 1-5, qubit 1 is busy for 20 layers (gates alternating
+        # with qubits 0 and 5) when `cx(1, 3)` needs routing.  Swapping on (1, 2) or on (2, 3)
+        # scores the same distance for `cx(1, 3)`, and the lookahead gate `cx(3, 4)` prefers (1, 2)
+        # by one unit of distance, but only (2, 3) can start right away, 20 layers earlier.
+        qc = QuantumCircuit(6)
+        for _ in range(10):
+            qc.cx(0, 1)
+            qc.cx(5, 1)
+        qc.cx(1, 3)
+        qc.cx(3, 4)
+        coupling = CouplingMap([[0, 1], [1, 2], [2, 3], [3, 4], [1, 5]])
+        coupling.make_symmetric()
+
+        def first_swap(lookahead_weight, seed):
+            heuristic = (
+                Heuristic(attempt_limit=60)
+                .with_basic(1.0, SetScaling.Constant)
+                .with_lookahead([lookahead_weight], SetScaling.Constant)
+            )
+            routed = SabreSwap(coupling, heuristic, seed=seed, trials=1)(qc)
+            swap = next(inst for inst in routed.data if inst.operation.name == "swap")
+            return {routed.find_bit(q).index for q in swap.qubits}
+
+        for seed in range(10):
+            # A lookahead unit worth less than 20 layers of waiting: the idle wires win.
+            self.assertEqual(first_swap(1e-4, seed), {2, 3})
+            # A lookahead unit worth more than 20 layers of waiting: lookahead still decides.
+            self.assertEqual(first_swap(0.5 / 6, seed), {1, 2})
+
+    @ddt.data("basic", "lookahead", "decay")
+    def test_swap_fusing_with_previous_block_is_preferred(self, heuristic):
+        """Test that Sabre prefers a swap that directly follows a 2q gate on the same pair, because
+        2q-block resynthesis fuses the two, so CX followed by SWAP costs two CX instead of four."""
+        # On the line 0-1-2, `cx(0, 2)` needs one swap after `cx(0, 1)`. Swapping on (0, 1) or on
+        # (1, 2) scores the same distance and starts at the same time, but only (0, 1) fuses.
+        qc = QuantumCircuit(3)
+        qc.cx(0, 1)
+        qc.cx(0, 2)
+        coupling = CouplingMap.from_line(3)
+        for seed in range(10):
+            routed = SabreSwap(coupling, heuristic, seed=seed, trials=1)(qc)
+            self.assertEqual(routed.count_ops()["swap"], 1)
+            swap = next(inst for inst in routed.data if inst.operation.name == "swap")
+            self.assertEqual({routed.find_bit(q).index for q in swap.qubits}, {0, 1})
+            fused = PassManager(
+                [ConsolidateBlocks(basis_gates=["cx", "u"]), UnitarySynthesis(["cx", "u"])]
+            )
+            self.assertEqual(fused.run(routed).count_ops()["cx"], 3)
 
     def test_rejects_too_many_qubits(self):
         """Test that a sensible Python-space error message is emitted if the DAG has an incorrect
@@ -970,9 +1042,9 @@ class TestSabreSwapControlFlow(QiskitTestCase):
         case0 = QuantumCircuit(qreg[[0, 1, 2]], creg[:])
         case0.cx(0, 1)
         case0.cx(1, 2)
-        case0.swap(0, 1)
-        case0.cx(2, 1)
-        case0.swap(0, 1)
+        case0.swap(1, 2)
+        case0.cx(1, 0)
+        case0.swap(1, 2)
         expected.switch(creg, [(0, case0)], qreg[[0, 1, 2]], creg[:])
 
         self.assertEqual(canonicalize_control_flow(test), canonicalize_control_flow(expected))
@@ -1009,21 +1081,21 @@ class TestSabreSwapControlFlow(QiskitTestCase):
         case0 = QuantumCircuit(qreg, creg[:])
         case0.cx(0, 1)
         case0.cx(1, 2)
-        case0.swap(0, 1)
-        case0.cx(2, 1)
-        case0.swap(0, 1)
+        case0.swap(1, 2)
+        case0.cx(1, 0)
+        case0.swap(1, 2)
         case1 = QuantumCircuit(qreg, creg[:])
         case1.cx(1, 2)
         case1.cx(2, 3)
-        case1.swap(1, 2)
-        case1.cx(3, 2)
-        case1.swap(1, 2)
+        case1.swap(2, 3)
+        case1.cx(2, 1)
+        case1.swap(2, 3)
         case2 = QuantumCircuit(qreg, creg[:])
         case2.cx(2, 3)
         case2.cx(3, 4)
-        case2.swap(2, 3)
-        case2.cx(4, 3)
-        case2.swap(2, 3)
+        case2.swap(3, 4)
+        case2.cx(3, 2)
+        case2.swap(3, 4)
         expected.switch(creg, [(0, case0), ((1, 2), case1), (3, case2)], qreg, creg)
 
         self.assertEqual(canonicalize_control_flow(test), canonicalize_control_flow(expected))
@@ -1052,9 +1124,9 @@ class TestSabreSwapControlFlow(QiskitTestCase):
         case0 = QuantumCircuit(qreg[[0, 1, 2]], creg[:])
         case0.cx(0, 1)
         case0.cx(1, 2)
-        case0.swap(0, 1)
-        case0.cx(2, 1)
-        case0.swap(0, 1)
+        case0.swap(1, 2)
+        case0.cx(1, 0)
+        case0.swap(1, 2)
         expected.switch(expr.bit_or(creg, 5), [(0, case0)], qreg[[0, 1, 2]], creg[:])
 
         self.assertEqual(canonicalize_control_flow(test), canonicalize_control_flow(expected))
@@ -1091,21 +1163,21 @@ class TestSabreSwapControlFlow(QiskitTestCase):
         case0 = QuantumCircuit(qreg, creg[:])
         case0.cx(0, 1)
         case0.cx(1, 2)
-        case0.swap(0, 1)
-        case0.cx(2, 1)
-        case0.swap(0, 1)
+        case0.swap(1, 2)
+        case0.cx(1, 0)
+        case0.swap(1, 2)
         case1 = QuantumCircuit(qreg, creg[:])
         case1.cx(1, 2)
         case1.cx(2, 3)
-        case1.swap(1, 2)
-        case1.cx(3, 2)
-        case1.swap(1, 2)
+        case1.swap(2, 3)
+        case1.cx(2, 1)
+        case1.swap(2, 3)
         case2 = QuantumCircuit(qreg, creg[:])
         case2.cx(2, 3)
         case2.cx(3, 4)
-        case2.swap(2, 3)
-        case2.cx(4, 3)
-        case2.swap(2, 3)
+        case2.swap(3, 4)
+        case2.cx(3, 2)
+        case2.swap(3, 4)
         expected.switch(expr.bit_or(creg, 5), [(0, case0), ((1, 2), case1), (3, case2)], qreg, creg)
 
         self.assertEqual(canonicalize_control_flow(test), canonicalize_control_flow(expected))
@@ -1392,10 +1464,18 @@ class TestSabreSwapControlFlow(QiskitTestCase):
                     "local stretches": set(block.iter_declared_stretches()),
                 }
 
+            def inner(block):
+                # Routing may put swaps after the control-flow op, so search for it.
+                return next(
+                    inst.operation.blocks[0]
+                    for inst in reversed(block.data)
+                    if isinstance(inst.operation, ControlFlowOp)
+                )
+
             blocks = (
                 ("global", circuit),
-                ("if", (if_body := circuit.data[-1].operation.blocks[0])),
-                ("while", if_body.data[-1].operation.blocks[0]),
+                ("if", (if_body := inner(circuit))),
+                ("while", inner(if_body)),
             )
             return {name: extract_local(block) for name, block in blocks}
 
