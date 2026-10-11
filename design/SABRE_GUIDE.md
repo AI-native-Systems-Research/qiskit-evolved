@@ -88,6 +88,15 @@ checkout.
 >   currently hold q2 and q3. Neighbors have distance 1.
 > - Scores: **smaller is better**. A negative score change means "this SWAP
 >   makes things better"; it is not a negative number of gates.
+> - In the state figures, an edge label such as `q2,p1` means "this
+>   dependency follows q2, which is currently at p1". A dashed line below a
+>   gate marks the **front layer F**; `***` below a gate marks the
+>   **lookahead layer E**. Grey gates are done; green gates can be emitted
+>   next. Colour is reinforced by text and symbols.
+> - Each state figure includes the current layout and the **logical-qubit
+>   distance matrix**. The hardware distance matrix stays fixed; the logical
+>   matrix follows the qubits as they move. A cell of 1 means adjacent,
+>   but the gate still needs its predecessors to be done.
 
 ---
 
@@ -290,6 +299,13 @@ because they share A.
 
 **Step 2, lookahead.** If g1 were done, g2 would be ready. So `E = {g2}`.
 
+![Steps 1-4 share this state: g1 is in F, g2 is in E, and the dependency edge follows A at p0. The matrix gives d(A,C)=2 and d(A,B)=1.](figures/sabre_states/small-start.svg)
+
+Read the matrix by **logical qubit name**, in the fixed order A, B, C. The
+row A, column C entry is 2. The layout strip above the graph tells you why:
+A is at p0, C at p2. The highlighted matrix cells are the pairs scored in
+F (blue) and E (amber); symmetric cells repeat the same distance.
+
 **Step 3, candidates.** The front qubits sit at p0 and p2. Edges touching
 them: `(p0, p1)` and `(p1, p2)`. Two candidates.
 
@@ -314,10 +330,16 @@ score(p1, p2) = −1 + 0.167 × (+1) = −0.833
 
 **Step 5, apply.** Insert `SWAP(p0, p1)`. The occupants become `[B, A, C]`.
 
+![Step 5: the edge label changes to A,p1 and d(A,C) becomes 1. g1 can now be emitted, but the SWAP itself has completed neither program gate.](figures/sabre_states/small-swap.svg)
+
 **Step 6, emit.** g1 = CX(A, C) is now on p1 and p2, adjacent: emit it. That
 unlocks g2 = CX(A, B), on p1 and p0, adjacent: emit it too.
 
+![Inside step 6, after g1: g1 is done and g2 is executable. The matrix is unchanged because emitting a CX does not move logical qubits.](figures/sabre_states/small-emit.svg)
+
 **Step 7.** Nothing is left. Routing is finished with one SWAP:
+
+![Step 7: both gates are done, F and E are empty, and the final layout and distance matrix remain those of step 5.](figures/sabre_states/small-done.svg)
 
 ```text
 p0: ──X─────────⊕──        X–X  = SWAP(p0, p1)
@@ -394,24 +416,12 @@ qubit:
 | g7 = CX(q5, q4) | g2 **and** g6 | q5 comes from g2, q4 comes from g6. |
 | g8 = CX(q4, q1) | g7 **and** g3 | q4 comes from g7, q1 comes from g3. |
 
-As a dependency graph (arrows mean "must come before"; each arrow is labelled
-with the shared qubit, as in the figure):
+As a dependency graph (arrows mean "must come before"). Each edge shows the
+shared logical qubit **and its physical location in the starting layout
+below**. For example, `g1 -> g3` carries `q2,p1`. The dashed underlines and
+asterisks mark F and E, introduced in section 5.
 
-```text
-          q2          q2
-   g1 ─────────▶ g3 ─────────▶ g5
-   │             │             ▲
-   │ q3          │ q1          │ q3
-   ▼             │             │
-   g4 ───────────┼─────────────┘
-   │             │
-   │ q4          └──────────────────────────┐
-   ▼                                        │ q1
-   g6 ─────────▶ g7 ─────────▶ g8 ◀─────────┘
-   ▲      q4     ▲      q4
-   │ q6          │ q5
-   g2 ───────────┘
-```
+![Initial dependency graph: every edge is labelled with its logical qubit and current physical location. g1 and g2 have front-layer underlines; g3 and g4 have lookahead asterisks.](figures/sabre_states/initial-dag.svg)
 
 Note that g1 and g2 are written one after the other but act on different
 qubits, so there is **no** arrow between them. Likewise g3 and g4: either may
@@ -429,6 +439,25 @@ parked between q2 and q3. (The paper leaves the device and the starting layout
 open. This choice makes both front-layer gates blocked at the start, so every
 part of the algorithm gets exercised. Part IV shows how SABRE would improve on
 it.)
+
+The **physical distance matrix** for this device is fixed for the entire
+guide. Its row and column names are positions, so `D_phys[pi,pj] = |i-j|`:
+
+| From / to | p0 | p1 | p2 | p3 | p4 | p5 |
+| --- | --- | --- | --- | --- | --- | --- |
+| p0 | 0 | 1 | 2 | 3 | 4 | 5 |
+| p1 | 1 | 0 | 1 | 2 | 3 | 4 |
+| p2 | 2 | 1 | 0 | 1 | 2 | 3 |
+| p3 | 3 | 2 | 1 | 0 | 1 | 2 |
+| p4 | 4 | 3 | 2 | 1 | 0 | 1 |
+| p5 | 5 | 4 | 3 | 2 | 1 | 0 |
+
+Every step below shows this same information **indexed by logical qubits**:
+`D_layout[qa,qb] = D_phys[layout(qa),layout(qb)]`. Rows and columns stay in
+the order q1, q2, ..., q6; the values change when their positions change.
+For example, initially `D_layout[q2,q3] = D_phys[p1,p3] = 2`.
+After SWAP(p2,p3), it becomes `D_phys[p1,p2] = 1`. The chip did not change;
+q3 moved. A gate emission changes neither matrix.
 
 With those occupants:
 
@@ -527,17 +556,45 @@ Three things about `E` are worth noticing:
   if you recompute `E` by hand from the definition you will see one more gate
   than the code does.
 
-The state before the first decision:
+### Reading a state snapshot
 
-```text
-Occupants:     [q1, q2, q6, q3, q4, q5]
-Emitted:       H(q1), Z(q1), H(q2), H(q5)   (one-qubit gates need no routing)
-Front F:       { g1 = CX(q2, q3),  q2 at p1, q3 at p3, distance 2
-                 g2 = CX(q5, q6),  q5 at p5, q6 at p2, distance 3 }
-Lookahead E:   { g3 = CX(q1, q2),  q1 at p0, q2 at p1, distance 1
-                 g4 = CX(q3, q4),  q3 at p3, q4 at p4, distance 1 }
-Not yet seen:  g5, g6, g7, g8
-```
+Read each figure from top to bottom: **layout, dependency graph, layers,
+distance matrix**. The graph keeps every gate in the same place across the
+walkthrough, so it is easy to see what changed. One-qubit gates remain
+omitted from this CX dependency graph.
+
+| Mark | Meaning |
+| --- | --- |
+| `F` in a node, dashed line underneath | Ready but blocked; the gates whose distances drive the next SWAP. |
+| `E` in a node, `***` underneath | Lookahead; scored but not permitted to run yet. |
+| `done`, grey node | Already emitted in this pass; kept visible to preserve the dependency picture. |
+| `wait`, plain node | Still waiting for predecessors, outside the current F and E. |
+| `emit next`, green node | Ready and adjacent inside an emission sweep. No new SWAP is needed for it. |
+| Green hardware edge and occupants | The SWAP just applied; green graph nodes instead mean executable gates. |
+| Blue / amber matrix cells | The logical pairs currently scored in F / E. |
+
+**Timing of the snapshots.** State S0 is before decision 1. State S1 is
+after decision 1 **and its full emit sweep**, hence before decision 2;
+the same convention continues through S6. Separate intermediate snapshots
+inside decision 1 show why "after the SWAP" and "after the emit sweep" are
+different moments. In an intermediate snapshot, a previously blocked F gate
+can be adjacent and awaiting immediate emission; no candidate is scored in
+that temporary state.
+
+**How to read a dependency edge.** `g1 -> g3` labelled `q2,p1` says that g3
+waits for g1 on q2, and q2 is **currently** at p1. It is not a device
+connection, and is not a record of where g1 ran in the past. Labels beside
+grey nodes also use the current layout. Use the emission tables for the
+physical operands at the time a gate was emitted.
+
+The state before the first decision is S0. H(q1), Z(q1), H(q2), and H(q5)
+have already been emitted; no CX has been emitted yet.
+
+![State S0, before decision 1: F={g1,g2}, E={g3,g4}. Every dependency edge includes a current physical location, and the matrix highlights the four scored pairs.](figures/sabre_states/s0.svg)
+
+**A quick reading check.** g3 has distance 1, but its predecessor g1 is
+not grey: g3 cannot run. g1 has no unfinished predecessor, but distance 2:
+it needs routing. These are two different reasons for a gate to wait.
 
 ## 6. The first decision, step by step
 
@@ -659,6 +716,15 @@ What changed and what did not:
 | The gates still to route | No, but their physical positions must be re-read from the new layout. |
 | Readiness counters | No. A SWAP emits no program gate. |
 
+![Decision 1 immediately after SWAP(p2,p3): q3 is now at p2 and q6 at p3. g1 is executable, while the dependency graph has no completed CX yet.](figures/sabre_states/s1-swap.svg)
+
+**Read the score directly from the two matrices.** In S0 the front pairs
+had distances `D[q2,q3] + D[q5,q6] = 2 + 3 = 5`. In this intermediate
+snapshot they have `1 + 2 = 3`, so `ΔD_F = 3 - 5 = -2`. The lookahead
+pairs change from `1 + 1 = 2` to `1 + 2 = 3`, so `ΔD_E = +1`.
+Use the **same F and E before and after a hypothetical SWAP** for this
+calculation; do not substitute the new layers produced by emitting gates.
+
 ### 6.5 Emit what is now possible
 
 g1 = CX(q2, q3): q2 at p1, q3 at p2, adjacent. Emit it as `CX(p1, p2)`. Its
@@ -669,6 +735,8 @@ counter-decrement makes g3 and g4 ready:
 | g3 = CX(q1, q2) | p0, p1 | Yes | Emit as CX(p0, p1). |
 | g4 = CX(q3, q4) | p2, p4 | No, distance 2 | Put in the front layer. |
 | g5 = CX(q2, q3), ready after g3 and g4 | — | — | Still waits for g4. |
+
+![Inside decision 1, after emitting g1: g3 is executable, g4 joins the blocked front with g2, and the layout and distance matrix have not changed. Lookahead is rebuilt after the sweep.](figures/sabre_states/s1-emit.svg)
 
 g2 is still blocked (q5 at p5, q6 at p3, distance 2), so the front layer now
 holds two gates again: `F = {g2, g4}`.
@@ -684,16 +752,9 @@ next decision this makes no difference: with g5 included, SWAP(p2, p3) would
 score one twelfth worse and nothing else would change, and SWAP(p2, p3) does
 not win anyway.
 
-State after the first decision:
+State S1 is after the first decision and the complete emission sweep:
 
-```text
-Occupants:     [q1, q2, q3, q6, q4, q5]
-Emitted:       SWAP(p2, p3), g1 on (p1, p2), g3 on (p0, p1)
-Front F:       { g2 = CX(q5, q6),  q5 at p5, q6 at p3, distance 2
-                 g4 = CX(q3, q4),  q3 at p2, q4 at p4, distance 2 }
-Lookahead E:   { g6 = CX(q4, q6),  q4 at p4, q6 at p3, distance 1 }
-Not yet seen:  g5, g7, g8
-```
+![State S1, before decision 2: g1 and g3 are done; F={g2,g4}, E={g6}. g5 stays unstarred to match this checkout's incremental lookahead. The matrix is the same as immediately after the SWAP.](figures/sabre_states/s1.svg)
 
 Notice that the front layer did not simply inherit the old lookahead layer.
 g3 was adjacent, so it was emitted straight away; g4 was not, so it joined g2
@@ -702,6 +763,8 @@ in the front. The lookahead layer was then rebuilt from the new front.
 ## 7. Finishing the circuit: decisions 2 to 6
 
 ### Decision 2
+
+**Starting snapshot: S1 above.**
 
 Front: g2 with q5 at p5 and q6 at p3; g4 with q3 at p2 and q4 at p4. Every
 position from p2 to p5 holds a front qubit, so the candidates are the edges
@@ -736,14 +799,11 @@ sweep is the longest of the whole run:
 Four CX gates and three one-qubit gates come out after a single SWAP. This is
 the "emit everything you can" sweep of section 5 doing its job.
 
-```text
-Occupants:     [q1, q2, q3, q4, q6, q5]
-Front F:       { g7 = CX(q5, q4),  q5 at p5, q4 at p3, distance 2 }
-Lookahead E:   { g8 = CX(q4, q1),  q4 at p3, q1 at p0, distance 3 }
-Not yet seen:  nothing; every gate has been emitted or is in F or E
-```
+![State S2, before decision 3: g1 through g6 are done; F={g7}, E={g8}. The matrix shows d(q5,q4)=2 and d(q4,q1)=3.](figures/sabre_states/s2.svg)
 
 ### Decision 3
+
+**Starting snapshot: S2 above.**
 
 Front: g7 with q5 at p5 and q4 at p3. Candidates: edges touching p5 or p3,
 which are `(p4, p5)`, `(p2, p3)` and `(p3, p4)`. Lookahead: g8, with q4 at
@@ -778,11 +838,11 @@ p5 and p4, adjacent, and is emitted as `CX(p5, p4)`. That makes g8 ready: q4
 at p4 and q1 at p0, distance 4, so it goes into the front layer. Nothing comes
 after g8, so `E` is empty.
 
-```text
-Occupants:     [q1, q2, q3, q6, q4, q5]
-Front F:       { g8 = CX(q4, q1),  q4 at p4, q1 at p0, distance 4 }
-Lookahead E:   { }
-```
+![State S3, before decision 4: g7 is now done, g8 is the only front gate, and E is empty. The matrix shows d(q4,q1)=4.](figures/sabre_states/s3.svg)
+
+**Same layout, different progress.** S3 has the same occupants and matrix
+as S1, but five more gates are grey. A layout alone is not the routing state:
+you also need to know which gates are done and which remain in F and E.
 
 ### Decisions 4, 5 and 6
 
@@ -805,6 +865,8 @@ been idle longest; section 12 shows the numbers. Here is the distance picture.
 Occupants become `[q2, q1, q3, q6, q4, q5]`. g8 is still blocked (distance
 3), so no gate is emitted and the search continues from the same front.
 
+![State S4, before decision 5: SWAP(p0,p1) moves q1 to p1 and q2 to p0. No new gate is done; F={g8}, E is empty, and d(q4,q1)=3.](figures/sabre_states/s4.svg)
+
 **Decision 5.** q4 at p4, q1 at p1. Candidates: `(p3, p4)`, `(p4, p5)`,
 `(p0, p1)` and `(p1, p2)`.
 
@@ -816,6 +878,8 @@ Occupants become `[q2, q1, q3, q6, q4, q5]`. g8 is still blocked (distance
 | SWAP(p4, p5) | q4 → p5 | 4 | +1 (+1/3 after credit) | |
 
 Occupants become `[q2, q3, q1, q6, q4, q5]`. Distance 2: still blocked.
+
+![State S5, before decision 6: SWAP(p1,p2) moves q1 to p2 and q3 to p1. F={g8}, E is empty, and d(q4,q1)=2.](figures/sabre_states/s5.svg)
 
 **Decision 6.** q4 at p4, q1 at p2. Candidates: `(p3, p4)`, `(p4, p5)`,
 `(p1, p2)` and `(p2, p3)`.
@@ -831,6 +895,8 @@ Occupants become `[q2, q3, q1, q4, q6, q5]`. q4 at p3 and q1 at p2 are
 adjacent, and g8 is emitted as `CX(p3, p2)`. The front layer is empty, so
 routing is finished.
 
+![State S6, after decision 6 and emission of g8: all eight CX gates are done. F and E are empty; the final matrix has d(q4,q1)=1.](figures/sabre_states/s6.svg)
+
 The pattern is worth a second look. q1 walked two steps to the right on wires
 that had been idle since early in the circuit, and q4 took one step to the
 left at the end. Each of those SWAPs can start as soon as its own wires are
@@ -839,9 +905,13 @@ the ready-time term is designed to encourage.
 
 ### The complete route
 
+The state sequence is `S0 -> S1 -> S2 -> S3 -> S4 -> S5 -> S6`.
+Each arrow is one chosen SWAP followed by every gate it enables. The two
+arrows into S4 and S5 emit no program gate.
+
 | Event | Occupants afterward | Emitted | Still blocked |
 | --- | --- | --- | --- |
-| Start | [q1, q2, q6, q3, q4, q5] | H(p0), Z(p0), H(p1), H(p4) | g1 at distance 2, g2 at distance 3 |
+| Start | [q1, q2, q6, q3, q4, q5] | H(p0), Z(p0), H(p1), H(p5) | g1 at distance 2, g2 at distance 3 |
 | Decision 1 | [q1, q2, q3, q6, q4, q5] | SWAP(p2, p3) | g2 at distance 2 |
 | Emit | [q1, q2, q3, q6, q4, q5] | CX(p1, p2) = g1, CX(p0, p1) = g3 | g4 at distance 2 joins g2 |
 | Decision 2 | [q1, q2, q3, q4, q6, q5] | SWAP(p3, p4) | nothing in front of g2 and g4 |
@@ -865,9 +935,9 @@ p2  ───────────X───⊕──────────
                │                   │                                       │
 p3  ───────────X───────────X───────⊕───H───●───Z───────X───────────────X───●──
                            │               │           │               │
-p4  ───H───────────────────X───⊕───────────⊕───────────X───⊕───────────X──────
+p4  ───────────────────────X───⊕───────────⊕───────────X───⊕───────────X──────
                                │                           │
-p5  ───────────────────────────●───────────────────────────●──────────────────
+p5  ───H───────────────────────●───────────────────────────●──────────────────
 ```
 
 Six SWAPs, eight CX gates. Expanding each SWAP into three CX gives 26 CX
@@ -950,6 +1020,12 @@ the same final layout; only the order of the last two changes. (This was
 also the fifth search SWAP of the attempt, so the code resets every
 multiplier to 1 instead of raising p3's and p4's, and decision 6 is scored
 with all multipliers at 1.)
+
+![Decay variant after decision 5: F={g8}, E is empty, q4 has moved to p3 while q1 is still at p1, and their matrix distance is 2.](figures/sabre_states/decay5.svg)
+
+The decay route uses the same snapshots S0 through S4, then the snapshot
+above instead of S5, then S6. Thus every decision in the forward layout
+search of section 16 has a graph and matrix too.
 
 The effect is tiny by design: it breaks near-ties toward fresh wires, which
 tends to let SWAPs run in parallel and lowers depth. It never overrides a
@@ -1458,20 +1534,50 @@ Part II's route again with one change: decay reverses the order of the last
 two SWAPs (section 8 works out that decision). The pass ends at
 `[q2, q3, q1, q4, q6, q5]`. Keep only that final layout.
 
-**Backward pass.** Reverse every dependency, so the obligations now run g5
+### Backward pass: states B0 to B5
+
+Reverse every dependency, so the obligations now run g5
 and g8 first, then g3 and g7, and so on back to g1 and g2. Start from
 `[q2, q3, q1, q4, q6, q5]`:
 
-| Step | Occupants | What happens |
-| --- | --- | --- |
-| Start | [q2, q3, q1, q4, q6, q5] | The forward route's final layout. No gate is emitted to get here. |
-| g5 = CX(q2, q3), g8 = CX(q4, q1) | [q2, q3, q1, q4, q6, q5] | q2 at p0, q3 at p1; q4 at p3, q1 at p2. Both adjacent, both emitted at once. |
-| g3, g7 become ready | [q2, q3, q1, q4, q6, q5] | g3 = CX(q1, q2): q1 at p2, q2 at p0, distance 2. g7 = CX(q5, q4): q5 at p5, q4 at p3, distance 2. `F = {g3, g7}`, `E = {g6}` (g6 now waits only for g7; g4 still waits for g6). |
-| Decision B1 | [q3, q2, q1, q4, q6, q5] | SWAP(p0, p1) brings q2 next to q1 and carries a fusion credit from g5 on (p0, p1). Emit g3 on (p2, p1). g1 is not yet ready: it waits for g4. |
-| Decision B2 | [q3, q2, q1, q6, q4, q5] | SWAP(p3, p4) makes g7 adjacent; lookahead prefers it to SWAP(p4, p5), which would move q6 away from q4. Emit g7 on (p5, p4), then g6 = CX(q4, q6) on (p4, p3). Now g4 (q3 at p0, q4 at p4, distance 4) and g2 (q5 at p5, q6 at p3, distance 2) form the front, and `E = {g1}`. |
-| Decision B3 | [q3, q2, q1, q4, q6, q5] | SWAP(p3, p4): ΔD_F = −2, helping g4 and g2 at once, plus a fusion credit from g6. Emit g2 on (p5, p4). g4 remains, at distance 3. |
-| Decision B4 | [q2, q3, q1, q4, q6, q5] | SWAP(p0, p1) ties SWAP(p2, p3) on distance; the ready term prefers p0 and p1 (free at 5, versus 9 for p3). Still blocked, at distance 2. |
-| Decision B5 | [q2, q3, q4, q1, q6, q5] | SWAP(p2, p3) makes g4 adjacent. Emit g4 on (p1, p2), then g1 = CX(q2, q3) on (p0, p1). Finished. |
+**Start, B0.** The layout carries over, but the completed-gate set starts
+empty for this new pass. g5 on (p0,p1) and g8 on (p3,p2) are adjacent and
+can be visited immediately. This makes g3 and g7 ready, both at distance 2.
+`F = {g3,g7}`, `E = {g6}`; g4 still waits for g6.
+
+The graph uses the **same node positions as the forward walkthrough, with
+every arrow reversed**. Grey now means visited in this backward pass. These
+visits explore a layout; they do not append gates to the final output circuit.
+The distance matrix uses the same fixed logical-qubit order as before.
+
+![Backward state B0, before B1: g5 and g8 have been visited; reversed dependencies give F={g3,g7} and E={g6}.](figures/sabre_states/b0.svg)
+
+**Decision B1.** SWAP(p0,p1) brings q2 next to q1 and carries a fusion
+credit from g5 on (p0,p1). Visit g3 on (p2,p1). g1 still waits for g4.
+
+![Backward state B1, before B2: q2 is now at p1, g3 is done, F={g7}, and E={g6}.](figures/sabre_states/b1.svg)
+
+**Decision B2.** SWAP(p3,p4) makes g7 adjacent. Lookahead prefers it to
+SWAP(p4,p5), which would move q6 away from q4. Visit g7 on (p5,p4), then
+g6 on (p4,p3). g4 and g2 become the front, at distances 4 and 2.
+
+![Backward state B2, before B3: g7 and g6 are done; F={g2,g4}, E={g1}. The matrix shows d(q3,q4)=4 and d(q5,q6)=2.](figures/sabre_states/b2.svg)
+
+**Decision B3.** SWAP(p3,p4) has `ΔD_F = -2`, helping g4 and g2 at once,
+plus a fusion credit from g6. Visit g2 on (p5,p4). g4 remains at distance 3.
+
+![Backward state B3, before B4: g2 is done; F={g4}, E={g1}, and d(q3,q4)=3.](figures/sabre_states/b3.svg)
+
+**Decision B4.** SWAP(p0,p1) ties SWAP(p2,p3) on distance. The ready term
+prefers p0 and p1 (free at 5, versus 9 for p3). g4 is still blocked, now at
+distance 2; no gate is visited.
+
+![Backward state B4, before B5: q3 moves to p1; F={g4}, E={g1}, and d(q3,q4)=2.](figures/sabre_states/b4.svg)
+
+**Decision B5.** SWAP(p2,p3) makes g4 adjacent. Visit g4 on (p1,p2), then
+g1 on (p0,p1). The backward pass is complete.
+
+![Backward state B5: every gate has been visited. F and E are empty; the resulting layout is q2,q3,q4,q1,q6,q5 on p0 through p5.](figures/sabre_states/b5.svg)
 
 The scores behind those choices, showing the winner and its closest rival at
 each decision (`H_now` is the weighted distance total that decay mode adds
@@ -1496,16 +1602,40 @@ back, section 8):
 The backward pass ends at `[q2, q3, q4, q1, q6, q5]`. Its five SWAPs are
 discarded, like the six of the forward pass; only this layout survives.
 
-**Use it as the initial layout** and route the real circuit forward, still
+### Refined forward pass: states R0 to R4
+
+**Use B5's layout as the initial layout** and route the real circuit forward, still
 with the decay configuration, since `SabreLayout` does the final routing too:
 
-| Step | Occupants | What happens |
-| --- | --- | --- |
-| Start | [q2, q3, q4, q1, q6, q5] | One-qubit gates first, as always. g1 on (p0, p1), g2 on (p5, p4) and g4 on (p1, p2) are adjacent and are emitted before any SWAP. `F = {g3, g6}`: q1 at p3 and q2 at p0, distance 3; q4 at p2 and q6 at p4, distance 2. `E = {g5, g7}`. |
-| Decision R1 | [q2, q3, q1, q4, q6, q5] | SWAP(p2, p3): ΔD_F = −2, helping g3 and g6, and it also brings g7's pair closer. Emit g6 on (p3, p4), with its Z. g7 (q5 at p5, q4 at p3, distance 2) joins g3 in the front. |
-| Decision R2 | [q2, q3, q1, q6, q4, q5] | SWAP(p3, p4) makes g7 adjacent, with a fusion credit from g6. Emit g7 on (p5, p4). |
-| Decision R3 | [q3, q2, q1, q6, q4, q5] | SWAP(p0, p1) makes g3 adjacent without disturbing g5 or g8, which SWAP(p1, p2) would have pulled apart. Emit g3 on (p2, p1), then g5 on (p1, p0). g8 (q4 at p4, q1 at p2, distance 2) is the front. |
-| Decision R4 | [q3, q2, q6, q1, q4, q5] | SWAP(p2, p3) ties SWAP(p3, p4) on distance; the ready term prefers p2 and p3 (free at 9, versus 10). Emit g8 on (p4, p3). Finished. |
+**Start, R0.** Reset progress for a new forward pass. One-qubit gates run as
+soon as their dependencies allow. g1 on (p0,p1), g2 on (p5,p4), and g4 on
+(p1,p2) are adjacent and are emitted before any SWAP. `F = {g3,g6}`:
+their distances are 3 and 2. `E = {g5,g7}`.
+
+![Refined forward state R0, before R1: g1, g2, and g4 are done. Forward arrows are restored; F={g3,g6}, E={g5,g7}.](figures/sabre_states/r0.svg)
+
+**Decision R1.** SWAP(p2,p3) has `ΔD_F = -2`, helping g3 and g6, and
+also brings g7's pair closer. Emit g6 on (p3,p4), with its Z. g7 joins
+g3 in the front. Both g5 and g8 are in lookahead: pretending the entire
+front is done satisfies their remaining dependencies.
+
+![Refined forward state R1, before R2: g6 is done, F={g3,g7}, and E={g5,g8}. Both front pairs have distance 2.](figures/sabre_states/r1.svg)
+
+**Decision R2.** SWAP(p3,p4) makes g7 adjacent, with a fusion credit from
+g6. Emit g7 on (p5,p4). g8 must still wait for g3, so it stays in E.
+
+![Refined forward state R2, before R3: g7 is done; F={g3}, E={g5,g8}. g8 remains in lookahead despite g7's emission because g3 is unfinished.](figures/sabre_states/r2.svg)
+
+**Decision R3.** SWAP(p0,p1) makes g3 adjacent without disturbing g5 or
+g8, which SWAP(p1,p2) would have pulled apart. Emit g3 on (p2,p1), then
+g5 on (p1,p0). g8 becomes the front, at distance 2.
+
+![Refined forward state R3, before R4: g3 and g5 are done; F={g8}, E is empty, and d(q4,q1)=2.](figures/sabre_states/r3.svg)
+
+**Decision R4.** SWAP(p2,p3) ties SWAP(p3,p4) on distance. The ready term
+prefers p2 and p3 (free at 9, versus 10). Emit g8 on (p4,p3). Finished.
+
+![Refined forward state R4: every gate is done, F and E are empty, and the final layout is q3,q2,q6,q1,q4,q5.](figures/sabre_states/r4.svg)
 
 The output circuit:
 

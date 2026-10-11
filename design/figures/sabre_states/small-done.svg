@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="590" viewBox="0 0 1000 590" role="img"><title>Small example / step 7</title>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8" fill="#687e91"/></marker></defs>
+<rect width="1000" height="590" fill="white"/>
+<text x="24" y="35" font-family="DejaVu Sans, sans-serif" font-size="27" fill="#182c42" text-anchor="start" font-weight="bold">Small example / step 7</text>
+<text x="24" y="67" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#182c42" text-anchor="start" font-weight="normal">Both gates emitted. The final layout is A at p1, B at p0, C at p2.</text>
+<text x="24" y="103" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#526477" text-anchor="start" font-weight="normal">Physical line / current occupants</text>
+<path d="M90.0,137 L500.0,137" fill="none" stroke="#d5dee7" stroke-width="3"/>
+<path d="M500.0,137 L910.0,137" fill="none" stroke="#d5dee7" stroke-width="3"/>
+<rect x="42.0" y="114" width="96" height="47" rx="6" fill="#f5f8fb" stroke="#d5dee7"/>
+<text x="90.0" y="144" font-family="DejaVu Sans, sans-serif" font-size="21" fill="#182c42" text-anchor="middle" font-weight="normal">B,p0</text>
+<rect x="452.0" y="114" width="96" height="47" rx="6" fill="#f5f8fb" stroke="#d5dee7"/>
+<text x="500.0" y="144" font-family="DejaVu Sans, sans-serif" font-size="21" fill="#182c42" text-anchor="middle" font-weight="normal">A,p1</text>
+<rect x="862.0" y="114" width="96" height="47" rx="6" fill="#f5f8fb" stroke="#d5dee7"/>
+<text x="910.0" y="144" font-family="DejaVu Sans, sans-serif" font-size="21" fill="#182c42" text-anchor="middle" font-weight="normal">C,p2</text>
+<text x="24" y="191" font-family="DejaVu Sans, sans-serif" font-size="21" fill="#182c42" text-anchor="start" font-weight="bold">Dependency graph / forward arrows</text>
+<path d="M308,258 L692,258" fill="none" stroke="#687e91" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="454" y="221" width="92" height="26" rx="0" fill="white" stroke="none"/>
+<text x="500" y="241" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">A,p1</text>
+<rect x="172" y="225" width="136" height="66" rx="6" fill="#edf0f3" stroke="#526477"/>
+<text x="240" y="251" font-family="DejaVu Sans, sans-serif" font-size="20" fill="#526477" text-anchor="middle" font-weight="bold">g1  done</text>
+<text x="240" y="276" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#526477" text-anchor="middle" font-weight="normal">A,C</text>
+<rect x="692" y="225" width="136" height="66" rx="6" fill="#edf0f3" stroke="#526477"/>
+<text x="760" y="251" font-family="DejaVu Sans, sans-serif" font-size="20" fill="#526477" text-anchor="middle" font-weight="bold">g2  done</text>
+<text x="760" y="276" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#526477" text-anchor="middle" font-weight="normal">A,B</text>
+<text x="24" y="330" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#165f98" text-anchor="start" font-weight="bold">---  F: front</text>
+<text x="198" y="330" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#875400" text-anchor="start" font-weight="bold">***  E: lookahead</text>
+<text x="451" y="330" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#526477" text-anchor="start" font-weight="normal">done: already emitted</text>
+<text x="752" y="330" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#526477" text-anchor="start" font-weight="normal">wait: later gate</text>
+<text x="24" y="363" font-family="DejaVu Sans, sans-serif" font-size="21" fill="#182c42" text-anchor="start" font-weight="bold">Distances between logical qubits</text>
+<text x="530" y="363" font-family="DejaVu Sans, sans-serif" font-size="21" fill="#182c42" text-anchor="start" font-weight="bold">Layers at this snapshot</text>
+<text x="530" y="394" font-family="DejaVu Sans, sans-serif" font-size="20" fill="#165f98" text-anchor="start" font-weight="bold">F = {}</text>
+<text x="530" y="422" font-family="DejaVu Sans, sans-serif" font-size="20" fill="#875400" text-anchor="start" font-weight="bold">E = {}</text>
+<text x="530" y="457" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#526477" text-anchor="start" font-weight="normal">Gate / physical operands / distance</text>
+<text x="530" y="491" font-family="DejaVu Sans, sans-serif" font-size="20" fill="#176850" text-anchor="start" font-weight="normal">No gates remain to route.</text>
+<text x="206.5" y="402" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="bold">A</text>
+<text x="113.5" y="432" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="bold">A</text>
+<rect x="160" y="412" width="93" height="30" rx="0" fill="#f1f4f7" stroke="#d5dee7"/>
+<text x="206.5" y="433" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">0</text>
+<rect x="253" y="412" width="93" height="30" rx="0" fill="white" stroke="#d5dee7"/>
+<text x="299.5" y="433" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">1</text>
+<rect x="346" y="412" width="93" height="30" rx="0" fill="white" stroke="#d5dee7"/>
+<text x="392.5" y="433" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">1</text>
+<text x="299.5" y="402" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="bold">B</text>
+<text x="113.5" y="462" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="bold">B</text>
+<rect x="160" y="442" width="93" height="30" rx="0" fill="white" stroke="#d5dee7"/>
+<text x="206.5" y="463" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">1</text>
+<rect x="253" y="442" width="93" height="30" rx="0" fill="#f1f4f7" stroke="#d5dee7"/>
+<text x="299.5" y="463" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">0</text>
+<rect x="346" y="442" width="93" height="30" rx="0" fill="white" stroke="#d5dee7"/>
+<text x="392.5" y="463" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">2</text>
+<text x="392.5" y="402" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="bold">C</text>
+<text x="113.5" y="492" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="bold">C</text>
+<rect x="160" y="472" width="93" height="30" rx="0" fill="white" stroke="#d5dee7"/>
+<text x="206.5" y="493" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">1</text>
+<rect x="253" y="472" width="93" height="30" rx="0" fill="white" stroke="#d5dee7"/>
+<text x="299.5" y="493" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">2</text>
+<rect x="346" y="472" width="93" height="30" rx="0" fill="#f1f4f7" stroke="#d5dee7"/>
+<text x="392.5" y="493" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">0</text>
+<text x="24" y="550" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#526477" text-anchor="start" font-weight="normal">Edge labels give current locations, even beside completed gates. They are not hardware links.</text>
+<text x="24" y="576" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#526477" text-anchor="start" font-weight="normal">A SWAP changes the matrix; emitting a gate leaves the layout and matrix unchanged.</text>
+</svg>
