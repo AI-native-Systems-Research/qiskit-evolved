@@ -965,72 +965,349 @@ SWAP count and depth are quality properties.
 
 ## 8. Decay: spread the SWAPs over different wires
 
-Distance and lookahead look only at positions, never at history. The third
-classic ingredient, **decay**, adds short-term memory so the router does not
-keep hammering the same two wires.
+**The idea:** when two candidate SWAPs make similar progress, prefer the one
+whose physical wires have not just been used by another SWAP. Distance and
+lookahead describe where the qubits are; **decay** adds a small memory of how
+they got there. A recently used wire makes a candidate slightly more expensive.
 
-**Rule.** Each physical position has a multiplier, starting at `1.0`. When a
-SWAP is chosen during a search, both of its endpoints' multipliers increase by
-`0.001`. A candidate's score is multiplied by the **larger** of its two
-endpoints' multipliers. The multipliers reset to `1.0` whenever a gate gets
-emitted. In addition, every fifth search SWAP (counted across the whole
-routing attempt) resets all multipliers instead of incrementing its endpoints.
+This section first explains decay with only the classic distance and lookahead
+terms. Section 8.6 then adds this checkout's fusion and ready-time terms to
+reproduce its exact choice. The increment `0.001`, reset interval `5`, and
+weight `w = 0.5 / number of physical qubits` below are this checkout's Python
+wrappers' decay configuration (section 13), not universal constants of SABRE.
 
-**Why multiply an absolute score.** Multiplying a *negative* change by 1.001
-would make it more negative, rewarding reuse instead of penalizing it. So in
-decay mode the code first adds back the current weighted distance total, making
-the score positive, and only then multiplies:
+### 8.1 What does "spread over different wires" mean?
+
+A **wire** here means a fixed physical position, such as p1, not whichever
+program qubit currently occupies it. Consider these alternatives after the
+router has inserted `SWAP(p0, p1)`:
+
+| Possible next SWAP | Shares a wire with SWAP(p0, p1)? | Scheduling consequence |
+| --- | --- | --- |
+| SWAP(p1, p2) | Yes, p1 | Must wait for the earlier SWAP on p1 to finish. |
+| SWAP(p3, p4) | No | Can overlap with that SWAP if its own earlier dependencies allow it. |
+
+Both alternatives add **one** SWAP to the count. But reusing p1 extends a
+chain of operations that must run in sequence. Choosing disjoint wires can
+allow more parallel work and therefore less **depth**. The original
+[SABRE paper](https://arxiv.org/abs/1809.02573) introduces decay to encourage
+this trade-off between gate count and depth.
+
+Decay does not build a schedule or know when a wire is actually free. It uses
+recent SWAP use as a cheap hint. "The router chooses SWAP B after SWAP A" is
+an order of compiler decisions; it does not force B to run later on the device
+if A and B are independent. Also, fresh wires are only a preference among
+legal candidates: decay does not add hardware edges to the candidate list.
+
+### 8.2 The memory: one multiplier per physical position
+
+Call the stored multiplier at position p `decay[p]`. Initially every entry is
+`1.000`, which means "no extra cost". After choosing and applying a search
+SWAP, the router normally **adds** `0.001` to each endpoint's entry. For
+example, if no reset intervenes:
 
 ```text
-decay score = (H_now + ΔD_F + w × ΔD_E) × m
-H_now = D_F + w × D_E      (the current weighted distance sum)
-m     = max(multiplier of endpoint 1, multiplier of endpoint 2)
+Physical position:          p0     p1     p2     p3     p4     p5
+Before any SWAP:          1.000  1.000  1.000  1.000  1.000  1.000
+After SWAP(p0, p1):       1.001  1.001  1.000  1.000  1.000  1.000
+Then SWAP(p1, p2):        1.001  1.002  1.001  1.000  1.000  1.000
 ```
 
-**Example, decision 1 in decay mode.** `H_now = 5 + 2/12 ≈ 5.1667`, and
-no SWAP has been chosen yet so every multiplier is 1:
+p1 was used twice, so its entry is `1 + 2 × 0.001 = 1.002`. This is an
+additive update, not repeated multiplication by `1.001`. The entries stay
+attached to their physical positions when program qubits trade places.
 
-| Candidate | ΔD_F + w × ΔD_E | H_now + that | × m = 1 | Rank |
-| --- | --- | --- | --- | --- |
-| SWAP(p0, p1) | +1.0000 | 6.1667 | 6.1667 | |
-| SWAP(p1, p2) | +0.0833 | 5.2500 | 5.2500 | |
-| SWAP(p2, p3) | −1.9167 | 3.2500 | 3.2500 | best |
-| SWAP(p3, p4) | +1.0000 | 6.1667 | 6.1667 | |
-| SWAP(p4, p5) | −0.9167 | 4.2500 | 4.2500 | |
+For a candidate `SWAP(a, b)`, use just **one** multiplier:
 
-Same ranking as before; decay changes nothing when nothing has been reused.
+```text
+m = max(decay[a], decay[b])
+```
 
-**Example where it matters: decision 5 in decay mode.** `SabreLayout` routes
-with the decay configuration (section 13), and its forward pass over our
-circuit (section 16) reaches decision 5 with one difference from Part II:
-SWAP(p0, p1) was chosen at decision 4 in the *same* search, with no gate
-emitted in between, so the multipliers of p0 and p1 are 1.001. `H_now = 3`
-(g8 alone, at distance 3) and the lookahead layer is empty.
+`max` means "take the larger of the two numbers". Immediately after the
+*first* SWAP in the table:
 
-| Candidate | H_now + ΔD_F (+ credit) | m | × m | Ready penalty (section 12) | Total |
+| Candidate | Endpoint entries | m | Reason |
+| --- | --- | --- | --- |
+| SWAP(p1, p2) | 1.001, 1.000 | 1.001 | Reusing even one endpoint incurs the penalty. |
+| SWAP(p3, p4) | 1.000, 1.000 | 1.000 | Neither endpoint has been used since the last reset. |
+| SWAP(p0, p1) | 1.001, 1.001 | 1.001 | Two used endpoints do not double the penalty. |
+
+This maximum is a simple way to let the more heavily reused endpoint determine
+the penalty. It is neither the sum nor the product of the endpoint entries.
+
+**Scoring does not update the memory.** All candidates in one decision read
+the same stored entries. Only after the winner is selected do its endpoints
+get updated. There are two reset rules, explained in section 8.7: routing a
+gate clears the memory, and every fifth search SWAP clears it instead of
+incrementing its endpoints. That is why the table above assumes no reset.
+
+### 8.3 The formula: multiply the distance left after the candidate
+
+Before adding decay, sections 6 and 7 compared **changes** in distance. For
+decay we need the **distance total after** each candidate instead. Keep F and
+E fixed while comparing candidates; do not emit a newly adjacent gate or
+rebuild the lookahead inside this calculation.
+
+| Symbol | Meaning at the current decision |
+| --- | --- |
+| `D_F` | Sum of the current distances of all front-layer pairs. |
+| `D_E` | Sum of the current distances of all lookahead pairs; 0 if E is empty. |
+| `w` | Lookahead weight; `1/12` on our six-position device. |
+| `ΔD_F` | Front sum after the candidate minus front sum now. |
+| `ΔD_E` | Lookahead sum after the candidate minus lookahead sum now. |
+| `H_now` | Current weighted total, `D_F + w × D_E`. Same for every candidate. |
+| `H_after` | Weighted total if this candidate were applied. Can differ by candidate. |
+| `m` | Larger stored decay entry of this candidate's two endpoints. |
+
+Read the calculation as three steps:
+
+```text
+1. Current total:      H_now   = D_F + w × D_E
+2. Candidate's total: H_after = H_now + ΔD_F + w × ΔD_E
+3. Penalize reuse:    score   = H_after × m
+```
+
+Step 2 is simply "current amount plus change equals new amount". Expanding
+it shows why it is the post-SWAP distance total:
+
+```text
+H_after = (D_F + ΔD_F) + w × (D_E + ΔD_E)
+        = front sum after + w × lookahead sum after
+```
+
+Here **absolute score** means this total, as opposed to a change. It does
+**not** mean applying an absolute-value operation such as `abs(ΔD_F)`.
+The score is also not a count of remaining SWAPs: adjacent pairs contribute
+distance 1, not 0, and one SWAP can affect several pairs.
+
+**Why not multiply the change directly?** Suppose two candidates each improve
+the weighted distance by 1, so each has change `-1`. One uses a fresh pair
+(`m = 1`); the other reuses a wire (`m = 1.001`). Multiplying those changes
+would give `-1` and `-1.001`. Smaller wins, so this would *reward* reuse.
+
+Instead, suppose `H_now = 3`. Both candidates leave `H_after = 3 - 1 = 2`:
+
+```text
+Fresh pair:   (3 - 1) × 1.000 = 2.000
+Reused wire:  (3 - 1) × 1.001 = 2.002
+```
+
+Now reuse raises the score, which is the intended penalty. The extra cost
+is `H_after × (m - 1)`: here `2 × 0.001 = 0.002`. A multiplier of `1.001`
+adds **0.1% of the post-SWAP total**, not a fixed `0.001` score penalty.
+
+Without decay, adding the same `H_now` to every candidate cannot change their
+ranking. With decay, candidates can have different multipliers, so that
+baseline must be included **before** multiplying. In particular,
+`(H_now + change) × m` is not the same as `H_now + change × m`.
+
+### 8.4 Worked example: decision 1, before any wire has been reused
+
+At S0, the layout is `[q1, q2, q6, q3, q4, q5]`. The two front gates are
+g1 = CX(q2, q3) and g2 = CX(q5, q6); the lookahead contains
+g3 = CX(q1, q2) and g4 = CX(q3, q4). Therefore:
+
+```text
+D_F   = d(q2, q3) + d(q5, q6) = 2 + 3 = 5
+D_E   = d(q1, q2) + d(q3, q4) = 1 + 1 = 2
+w     = 0.5 / 6 = 1/12
+H_now = 5 + (1/12) × 2 = 31/6 = 5.166666...
+```
+
+Take the eventual winner, `SWAP(p2, p3)`, slowly. Its imagined layout is
+`[q1, q2, q3, q6, q4, q5]`. The front distances become 1 and 2, so
+`ΔD_F = (1 + 2) - 5 = -2`. The lookahead distances become 1 and 2, so
+`ΔD_E = (1 + 2) - 2 = +1`. Substituting:
+
+```text
+H_after = 31/6 - 2 + (1/12) × 1 = 39/12 = 3.25
+m       = max(decay[p2], decay[p3]) = max(1, 1) = 1
+score   = 3.25 × 1 = 3.25
+```
+
+You can check the same result directly from the new distances:
+`H_after = (1 + 2) + (1/12) × (1 + 2) = 3.25`. g1 still contributes its
+distance of 1 during scoring; it is only emitted after the winner is applied.
+
+Here are all five alternatives. The post-SWAP sums come from section 6, and
+the decimal scores are rounded to four places only for display:
+
+| Candidate | Front sum after | Lookahead sum after | H_after | m | Decay score |
 | --- | --- | --- | --- | --- | --- |
-| SWAP(p1, p2) | 3 − 1 = 2 | 1.001 | 2.002 | 0.000242 | 2.002242 |
-| SWAP(p3, p4) | 3 − 1 = 2 | 1.000 | 2.000 | 0.000264 | **2.000264** |
-| SWAP(p0, p1) | 3 + 1 = 4 | 1.001 | 4.004 | 0.000242 | 4.004242 |
-| SWAP(p4, p5) | 3 + 1 − 2/3 | 1.000 | 3.333 | 0.000264 | 3.333597 |
+| SWAP(p0, p1) | 6 | 2 | 6 + 2/12 | 1 | 6.1667 |
+| SWAP(p1, p2) | 5 | 3 | 5 + 3/12 | 1 | 5.2500 |
+| SWAP(p2, p3) | 3 | 3 | 3 + 3/12 | 1 | **3.2500** |
+| SWAP(p3, p4) | 6 | 2 | 6 + 2/12 | 1 | 6.1667 |
+| SWAP(p4, p5) | 4 | 3 | 4 + 3/12 | 1 | 4.2500 |
 
-Decay picks SWAP(p3, p4), the opposite of Part II's choice, because p1 was
-used by the previous SWAP. The route still ends with the same six SWAPs and
-the same final layout; only the order of the last two changes. (This was
-also the fifth search SWAP of the attempt, so the code resets every
-multiplier to 1 instead of raising p3's and p4's, and decision 6 is scored
-with all multipliers at 1.)
+Every multiplier is 1, so there is no history-based preference yet. The
+ranking is exactly the same as section 6's change-based ranking. This
+checkout's fusion credit and ready penalty are also zero at this decision,
+so `SWAP(p2, p3)` wins with the complete score too.
+
+### 8.5 Worked example: decision 5, where decay changes the choice
+
+Follow this checkout's forward route with decay enabled, as `SabreLayout`
+does in section 16. It reaches the same S4 as section 7: decisions 1 through
+3 emitted gates, but decision 4 inserted `SWAP(p0, p1)` and emitted none.
+The decay memory from decision 4 therefore survives into decision 5:
+
+```text
+Position:     p0 ---- p1 ---- p2 ---- p3 ---- p4 ---- p5
+Occupant:     q2      q1      q3      q6      q4      q5
+Decay:       1.001   1.001   1.000   1.000   1.000   1.000
+
+F = {g8 = CX(q4, q1)}, E = empty
+D_F = |4 - 1| = 3, D_E = 0, H_now = 3
+```
+
+The important comparison is between moving q1 right and moving q4 left.
+Both shorten the distance from 3 to 2; neither makes g8 executable yet.
+
+| Candidate | Movement | Distance after | H_after | m | Classic decay score |
+| --- | --- | --- | --- | --- | --- |
+| SWAP(p1, p2) | q1: p1 to p2 | 2 | 3 - 1 = 2 | 1.001 | 2.002 |
+| SWAP(p3, p4) | q4: p4 to p3 | 2 | 3 - 1 = 2 | 1.000 | **2.000** |
+| SWAP(p0, p1) | q1: p1 back to p0 | 4 | 3 + 1 = 4 | 1.001 | 4.004 |
+| SWAP(p4, p5) | q4: p4 to p5 | 4 | 3 + 1 = 4 | 1.000 | 4.000 |
+
+For the first candidate, p1 was used by decision 4:
+`m = max(1.001, 1.000) = 1.001`, so the score is `2 × 1.001 = 2.002`.
+For the second, neither p3 nor p4 has been used by a SWAP **since the last
+decay reset**: `m = max(1, 1) = 1`, so the score is `2 × 1 = 2`.
+p3 and p4 did participate in earlier SWAPs, but emitting gates cleared that
+history. A value of 1 does not mean "never used in the whole circuit".
+
+**Decay prefers SWAP(p3, p4).** It makes the same distance progress without
+reusing p1. The two other candidates move the pair apart and are much worse.
+No randomness is needed to settle this comparison.
+
+### 8.6 Adding this checkout's extra terms to decision 5
+
+The previous table isolates decay. To reproduce the exact numbers from this
+checkout, include the two terms explained fully in sections 11 and 12:
+
+- **Fusion credit `f`:** a negative adjustment when a SWAP can combine with
+  a preceding two-qubit block on the same pair. Here only `(p4, p5)` gets a
+  credit, `-2/3`, because g7 was just emitted on that pair.
+- **Ready penalty:** `0.000022 × T`, where `T` is the larger of the two
+  endpoints' estimated ready times. It slightly favors a pair that can start
+  sooner. Here `ready = [11, 11, 8, 11, 12, 12]`, in p0 through p5 order.
+
+In this decay configuration the front weight is 1, so the full formula is:
+
+```text
+score = (H_now + ΔD_F + w × ΔD_E + f) × m + 0.000022 × T
+      = (H_after + f) × m                 + ready penalty
+```
+
+The fusion credit is **inside** the multiplication. The ready penalty is
+added **after** it. At decision 5 the lookahead is empty, so its term is zero.
+
+| Candidate | H_after + f | m | After multiplication | Ready penalty | Total |
+| --- | --- | --- | --- | --- | --- |
+| SWAP(p1, p2) | 2 + 0 = 2 | 1.001 | 2.002 | 0.000242 | 2.002242 |
+| SWAP(p3, p4) | 2 + 0 = 2 | 1.000 | 2.000 | 0.000264 | **2.000264** |
+| SWAP(p0, p1) | 4 + 0 = 4 | 1.001 | 4.004 | 0.000242 | 4.004242 |
+| SWAP(p4, p5) | 4 - 2/3 = 10/3 | 1.000 | 3.333333... | 0.000264 | 3.333597 |
+
+For `(p1, p2)`, `T = max(11, 8) = 11`, giving
+`0.000022 × 11 = 0.000242`. For `(p3, p4)`, `T = max(11, 12) = 12`, giving
+`0.000264`. Its ready penalty is larger by just `0.000022`, whereas avoiding
+p1 saves `0.002` in decay cost. Thus `(p3, p4)` still wins, by
+`2.002242 - 2.000264 = 0.001978`.
+
+This explains the difference from Part II, which used lookahead mode without
+decay. There, the two leading candidates had scores `-1 + 0.000242` and
+`-1 + 0.000264`, so the smaller ready penalty picked `(p1, p2)`. With decay
+enabled, the preference for avoiding a recently used wire outweighs that
+small ready-time advantage. The fusion credit helps `(p4, p5)` but does not
+make it competitive.
+
+After applying the winner, the layout is `[q2, q1, q3, q4, q6, q5]`:
 
 ![Decay variant after decision 5: F={g8}, E is empty, q4 has moved to p3 while q1 is still at p1, and their matrix distance is 2.](figures/sabre_states/decay5.svg)
 
-The decay route uses the same snapshots S0 through S4, then the snapshot
-above instead of S5, then S6. Thus every decision in the forward layout
-search of section 16 has a graph and matrix too.
+g8 is still at distance 2. Decision 6 then chooses `SWAP(p1, p2)` and emits
+g8 at distance 1. The route uses the same snapshots S0 through S4, then the
+snapshot above instead of S5, then S6. It has the same six SWAPs and final
+layout as section 7; the last two SWAPs occur in the opposite selection order.
+Those two SWAPs use disjoint wires, so changing their selection order alone
+does not demonstrate a depth reduction in this example.
 
-The effect is tiny by design: it breaks near-ties toward fresh wires, which
-tends to let SWAPs run in parallel and lowers depth. It never overrides a
-clear distance advantage. "Decay" is just the name of this heuristic; it has
-nothing to do with physical decoherence.
+### 8.7 Exactly when the memory is cleared
+
+A **search** here is a run of chosen SWAPs trying to make at least one front
+gate executable. There can be several such searches in one routing trial.
+The normal decay bookkeeping is:
+
+1. **Score and choose** using the current multipliers.
+2. **Apply the chosen SWAP**, then advance the search-step counter.
+3. If that counter reaches 5, **reset all multipliers to 1** and the counter
+   to 0. Do not increment either endpoint on this step. Otherwise, add
+   `0.001` to each of the chosen SWAP's endpoint multipliers.
+4. If no front gate became adjacent, score the next set of candidates with
+   these updated multipliers.
+5. If a gate became adjacent, emit it and all other gates enabled by the emit
+   sweep. Then **reset all multipliers to 1** before the next search. This
+   reset does **not** reset the search-step counter.
+
+Thus there are two separate pieces of state: the per-wire multipliers and a
+counter for the periodic reset. Emitting gates clears only the first. The
+counter counts heuristic-selected search SWAPs across the whole routing trial;
+it does not count emitted CX gates or the safety valve's forced SWAPs.
+
+Here is the actual timeline for the decay route above. "All 1" means every
+wire's multiplier is 1; the counter column is its value **after** the event.
+
+| Event | Counter | Multipliers above 1 after the event | Why |
+| --- | --- | --- | --- |
+| Start | 0 | All 1 | Initial state. |
+| Decision 1: SWAP(p2, p3) | 1 | p2, p3: 1.001 | Increment the chosen endpoints. |
+| Emit g1 and g3 | 1 | All 1 | Emit sweep clears memory, not the counter. |
+| Decision 2: SWAP(p3, p4) | 2 | p3, p4: 1.001 | Increment. |
+| Emit g2, g4, g6 and g5 | 2 | All 1 | Emit sweep reset. |
+| Decision 3: SWAP(p3, p4) | 3 | p3, p4: 1.001 | Increment. |
+| Emit g7 | 3 | All 1 | Emit sweep reset. |
+| Decision 4: SWAP(p0, p1) | 4 | p0, p1: 1.001 | No gate emitted; this survives into decision 5. |
+| Decision 5: SWAP(p3, p4) | 0 | All 1 | Fifth search SWAP: periodic reset replaces increment. |
+| Decision 6: SWAP(p1, p2) | 1 | p1, p2: 1.001 | Increment. |
+| Emit g8 | 1 | All 1 | Emit sweep reset; routing ends. |
+
+Notice the timing at decision 5: it is **scored with** p0 and p1 at 1.001,
+then the winner is applied, and only **then** does the fifth-step reset occur.
+Resetting before scoring would erase the very preference shown in section 8.5.
+Decision 6, by contrast, sees all multipliers at 1 even though decision 5
+emitted no gate. Its two distance-improving candidates are separated by ready
+time: `(p1, p2)` has `T = 11`, while `(p2, p3)` has `T = 15` after the
+SWAP on `(p3, p4)`. This checkout therefore picks `(p1, p2)`.
+
+### 8.8 How strong is the preference, and what does it guarantee?
+
+With increment `0.001` and a reset every fifth search SWAP, an endpoint can
+accumulate at most four increments between periodic resets. Its multiplier
+is therefore at most `1.004`; gate emissions often reset it sooner. This
+configuration makes the reuse cost small: at most **0.4% of the positive
+quantity being multiplied**.
+
+For example, a post-SWAP distance score of 2 on a reused wire becomes 2.002;
+it still beats a score of 3 on fresh wires. But decay is applied to **every**
+candidate, not only to exact ties. A fresh candidate scoring 2.001 would beat
+that 2.002 even though its distance score was slightly worse. Whether a
+distance advantage survives depends on the actual totals and multipliers;
+there is no general rule that distance always wins.
+
+Decay encourages parallelism; it does not guarantee minimum depth, fewer
+SWAPs, or an optimal route. It remembers recent search steps, not elapsed
+hardware time. The name also does not mean the stored values gradually shrink:
+in this implementation they increase on use and jump back to 1 on reset.
+It has nothing to do with physical decoherence or qubit relaxation times.
+
+To trace this in the code, start with `choose_best_swap` in
+[`route.rs`](../crates/transpiler/src/passes/sabre/route.rs): it adds the
+current total and multiplies by the maximum endpoint entry. Then read
+`swap_map_trial` in the same file for the increment, fifth-step reset, and
+post-emission reset. Section 13 combines this with all the other bookkeeping.
 
 ## 9. Ties, randomness, trials, and the safety valve
 
