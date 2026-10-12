@@ -316,6 +316,242 @@ def draw_state(state):
     svg.save(FIGURES / f"{state.name}.svg")
 
 
+
+# --- Section 11 figures: fusion credit -------------------------------------
+
+def draw_circuit(svg, x0, y0, wires, ops, pitch=90, gap=64, label_w=64):
+    """Draw a small circuit. ops: ("cx", ctrl, tgt), ("swap", a, b), ("1q", wire, text).
+    Returns the x coordinate of each op's column."""
+    xs = [x0 + label_w + pitch * (i + 0.5) for i in range(len(ops))]
+    right = x0 + label_w + pitch * len(ops)
+    for i, name in enumerate(wires):
+        y = y0 + i * gap
+        svg.text(x0 + label_w - 12, y + 7, name, 19, anchor="end", bold=True)
+        svg.path([(x0 + label_w, y), (right, y)], "#687e91", 2)
+    for x, op in zip(xs, ops):
+        kind = op[0]
+        if kind == "cx":
+            ya, yb = y0 + op[1] * gap, y0 + op[2] * gap
+            svg.path([(x, ya), (x, yb)], INK, 2.5)
+            svg.parts.append(f'<circle cx="{x}" cy="{ya}" r="7" fill="{INK}"/>')
+            svg.parts.append(f'<circle cx="{x}" cy="{yb}" r="12" fill="white" stroke="{INK}" stroke-width="2.5"/>')
+            svg.path([(x - 12, yb), (x + 12, yb)], INK, 2.5)
+            svg.path([(x, yb - 12), (x, yb + 12)], INK, 2.5)
+        elif kind == "swap":
+            ya, yb = y0 + op[1] * gap, y0 + op[2] * gap
+            svg.path([(x, ya), (x, yb)], INK, 2.5)
+            for y in (ya, yb):
+                svg.path([(x - 9, y - 9), (x + 9, y + 9)], INK, 2.5)
+                svg.path([(x - 9, y + 9), (x + 9, y - 9)], INK, 2.5)
+        elif kind == "1q":
+            y = y0 + op[1] * gap
+            svg.rect(x - 19, y - 19, 38, 38, "white", INK, 4)
+            svg.text(x, y + 7, op[2], 18, anchor="middle", bold=True)
+    return xs
+
+
+def draw_fusion_cancel():
+    svg = SVG(800, "Why a SWAP right after a CX is cheaper: the two meeting CX gates cancel")
+    svg.text(24, 35, "Why a SWAP right after a CX is cheaper", 27, bold=True)
+    svg.text(24, 67, "Decision 3 of the running route: g6 = CX(p3, p4) was just emitted, and SWAP(p3, p4) is a candidate.", 18)
+    wires = ["p3", "p4"]
+    # Panel 1: what the router emits.
+    svg.text(24, 118, "1.  What the router would place", 21, bold=True)
+    svg.text(560, 118, "cost: 1 + 3 = 4 CX", 20, MUTED, bold=True)
+    xs = draw_circuit(svg, 24, 165, wires, [("cx", 0, 1), ("swap", 0, 1)])
+    svg.text(xs[0], 272, "g6", 18, MUTED, "middle")
+    svg.text(xs[1], 272, "SWAP", 18, MUTED, "middle")
+    # Panel 2: expand the swap.
+    svg.text(24, 330, "2.  The SWAP written as three CX", 21, bold=True)
+    svg.text(560, 330, "still 4 CX", 20, MUTED, bold=True)
+    ops = [("cx", 0, 1), ("cx", 0, 1), ("cx", 1, 0), ("cx", 0, 1)]
+    y0 = 395
+    xs = draw_circuit(svg, 24, y0, wires, ops)
+    svg.rect(xs[0] - 36, y0 - 40, xs[1] - xs[0] + 72, 64 + 80, GREEN_BG, GREEN, 8)
+    draw_circuit(svg, 24, y0, wires, ops)
+    svg.text(xs[0], y0 + 128, "g6", 18, MUTED, "middle")
+    svg.text((xs[1] + xs[3]) / 2, y0 + 128, "the SWAP, as three CX", 18, MUTED, "middle")
+    tx = xs[3] + 70
+    svg.text(tx, y0 - 4, "The boxed CX gates are identical and adjacent.", 18, GREEN, bold=True)
+    svg.text(tx, y0 + 22, "A CX undoes itself, so together they do nothing", 18, GREEN)
+    svg.text(tx, y0 + 48, "and can be removed.", 18, GREEN)
+    # Panel 3: after cancelling.
+    svg.text(24, 580, "3.  After removing the pair", 21, bold=True)
+    svg.text(560, 580, "2 CX", 20, GREEN, bold=True)
+    xs = draw_circuit(svg, 24, 640, wires, [("cx", 1, 0), ("cx", 0, 1)])
+    svg.text(xs[1] + 70, 640 + 32, "Same effect on p3 and p4 as g6 followed by the SWAP.", 18, MUTED)
+    svg.text(xs[1] + 70, 640 + 58, "There is no separate SWAP left to run.", 18, MUTED)
+    svg.text(24, 764, "Saving: 2 CX. One SWAP is 3 CX, so in the score's units (SWAPs) the credit is -2/3.", 17, MUTED)
+    svg.save(FIGURES / "fusion-cancel.svg")
+
+
+def draw_fusion_nodes():
+    svg = SVG(470, "Before routing, each two-qubit routing node gets a block estimate")
+    svg.text(24, 35, "Step 1: each routing node carries a block estimate", 27, bold=True)
+    svg.text(24, 67, "Consecutive operations on the same pair of program qubits form one routing node. Under each gate: its contribution.", 18)
+    wires = ["q0", "q1", "q2"]
+    ops = [("cx", 0, 1), ("1q", 0, "H"), ("cx", 1, 0), ("1q", 1, "Rz"), ("cx", 1, 2)]
+    y0 = 150
+    xs = draw_circuit(svg, 24, y0, wires, ops, pitch=120)
+    svg.rect(xs[0] - 50, y0 - 46, xs[3] - xs[0] + 100, 64 * 2 + 92, BLUE_BG, BLUE, 10)
+    svg.rect(xs[4] - 50, y0 - 46, 100, 64 * 2 + 92, AMBER_BG, AMBER, 10)
+    draw_circuit(svg, 24, y0, wires, ops, pitch=120)
+    for x, c in zip(xs, ["1", "0", "1", "0", "1"]):
+        svg.text(x, y0 + 64 * 2 + 72, c, 22, INK, "middle", True)
+    svg.text(xs[0] - 50, y0 - 58, "R1: pair (q0, q1)", 19, BLUE, bold=True)
+    svg.text(xs[4] - 50, y0 - 58, "R2: pair (q1, q2)", 19, AMBER, bold=True)
+    svg.path([(xs[3] + 50, y0 + 64), (xs[4] - 50, y0 + 64)], "#687e91", 2.5, arrow=True)
+    svg.text((xs[3] + xs[4]) / 2, y0 + 64 - 14, "waits for", 16, MUTED, "middle")
+    svg.text(24, 395, "R1.block = min(3, 1 + 0 + 1 + 0) = 2", 21, BLUE, bold=True)
+    svg.text(560, 395, "R2.block = 1", 21, AMBER, bold=True)
+    svg.text(24, 430, "CX, CY, CZ, ECR count 1; any other two-qubit gate counts 3; one-qubit gates count 0; the sum is capped at 3.", 17, MUTED)
+    svg.text(24, 454, "A measurement, reset, barrier or control-flow operation inside a node sets block = None: that node ends any run.", 17, MUTED)
+    svg.save(FIGURES / "fusion-nodes.svg")
+
+
+FUSION_EVENTS = [
+    # (label, kind, (a, b), node_block)
+    ("SWAP(p2, p3)", "swap", (2, 3), None),
+    ("g1 = CX(p1, p2)", "gate", (1, 2), 1),
+    ("g3 = CX(p0, p1)", "gate", (0, 1), 1),
+    ("SWAP(p3, p4)", "swap", (3, 4), None),
+    ("g2 = CX(p5, p4)", "gate", (5, 4), 1),
+    ("g4 = CX(p2, p3), 2 H", "gate", (2, 3), 1),
+    ("g6 = CX(p3, p4), Z", "gate", (3, 4), 1),
+    ("g5 = CX(p1, p2)", "gate", (1, 2), 1),
+]
+STRIP_XS = [300 + i * 640 / 5 for i in range(6)]
+
+
+def replay_last_block(events, n=6):
+    """Apply route.rs's last_block rules; yield the record after each event."""
+    last = [None] * n
+    for _, kind, (a, b), block in events:
+        if kind == "swap":
+            last[a] = last[b] = None
+        else:
+            open_c = last[a][1] if (last[a] and last[b] and last[a][0] == b and last[b][0] == a) else 0
+            c = 0 if block is None else min(3, open_c + block)
+            last[a] = (b, c) if c > 0 else None
+            last[b] = (a, c) if c > 0 else None
+        yield list(last)
+
+
+def draw_last_block_strip(svg, y, last, xs, occupants=None, swap=None):
+    n = len(last)
+    for p in range(n - 1):
+        svg.path([(xs[p], y), (xs[p + 1], y)], LINE, 3)
+    for p, rec in enumerate(last):
+        if rec is None:
+            continue
+        partner, c = rec
+        mutual = last[partner] is not None and last[partner][0] == p
+        if mutual and p < partner:
+            svg.path([(xs[p], y), (xs[partner], y)], GREEN, 7)
+            svg.text((xs[p] + xs[partner]) / 2, y - 30, f"c = {c}", 17, GREEN, "middle", True)
+        elif not mutual:
+            direction = 1 if partner > p else -1
+            svg.path([(xs[p] + direction * 44, y + 28), (xs[partner] - direction * 50, y + 28)],
+                     AMBER, 2.5, dash=True, arrow=True)
+    for p in range(n):
+        label = f"p{p}" if occupants is None else f"{occupants[p]},p{p}"
+        highlighted = swap is not None and p in swap
+        svg.rect(xs[p] - 42, y - 20, 84, 40, GREEN_BG if highlighted else "#f5f8fb")
+        svg.text(xs[p], y + 7, label, 19, anchor="middle", bold=highlighted)
+
+
+def draw_fusion_history():
+    events = FUSION_EVENTS
+    rows = list(replay_last_block(events))
+    final = rows[-1]
+    assert final == [(1, 1), (2, 1), (1, 1), (4, 1), (3, 1), (4, 1)], final
+    strip = 96
+    height = 190 + strip * len(events) + 50
+    svg = SVG(height, "last_block after each event of the running route, decisions 1 to 3")
+    svg.text(24, 35, "Step 2: what each wire remembers, event by event", 27, bold=True)
+    svg.text(24, 67, "The running route from decision 1 up to decision 3. After each event: which wire names which, and the run cost c.", 18)
+    xs = STRIP_XS
+    svg.path([(xs[0], 108), (xs[1], 108)], GREEN, 7)
+    svg.text(xs[1] + 16, 114, "both wires name each other: a credit is possible", 17, GREEN)
+    svg.path([(xs[0] + 20, 142), (xs[1] - 20, 142)], AMBER, 2.5, dash=True, arrow=True)
+    svg.text(xs[1] + 16, 148, "one-sided: this wire names a partner that has moved on", 17, AMBER)
+    for i, ((label, kind, pair, _), last) in enumerate(zip(events, rows)):
+        y = 215 + strip * i
+        svg.text(24, y + 7, label, 18, INK, bold=kind == "gate")
+        draw_last_block_strip(svg, y, last, xs, swap=pair if kind == "swap" else None)
+    svg.text(24, height - 22, "A SWAP clears both of its wires. A gate on (a, b) makes a and b name each other; any older record on a or b is overwritten.", 17, MUTED)
+    svg.save(FIGURES / "fusion-history.svg")
+
+
+def draw_fusion_decision3():
+    final = list(replay_last_block(FUSION_EVENTS))[-1]
+    w = 0.5 / 6
+    candidates = [
+        ("SWAP(p2, p3)", (2, 3), +1, -w, False),
+        ("SWAP(p3, p4)", (3, 4), -1, +w, True),
+        ("SWAP(p4, p5)", (4, 5), -1, 0.0, False),
+    ]
+    svg = SVG(700, "Decision 3: the fusion credit overturns the classic ranking")
+    svg.text(24, 35, "Decision 3: the credit overturns the classic ranking", 27, bold=True)
+    svg.text(24, 67, "Top: wire memory at S2 (the last strip of the previous figure). Bottom: each candidate's score, one term at a time.", 18)
+    xs = STRIP_XS
+    svg.text(24, 158, "wire memory at S2", 18, MUTED)
+    draw_last_block_strip(svg, 152, final, xs, occupants=["q1", "q2", "q3", "q4", "q6", "q5"])
+    # Waterfall of score terms.
+    left, right = 300, 960
+    lo, hi = -2.0, 1.5
+    scale = (right - left) / (hi - lo)
+    zero_x = left - lo * scale
+    axis_y = 262
+    svg.path([(left, axis_y), (right, axis_y)], "#687e91", 2)
+    for v in (-2, -1, 0, 1):
+        x = zero_x + v * scale
+        svg.path([(x, axis_y - 6), (x, axis_y + 6)], "#687e91", 2)
+        svg.text(x, axis_y - 12, f"{v:+d}" if v else "0", 16, MUTED, "middle")
+    svg.text(24, axis_y + 6, "score (lower wins)", 18, MUTED)
+    svg.path([(zero_x, axis_y), (zero_x, 630)], LINE, 2, dash=True)
+    terms = (("front distance", BLUE), ("lookahead", AMBER), ("credit", GREEN))
+    for i, (name, pair, d_f, look, handshake) in enumerate(candidates):
+        y = 320 + i * 110
+        mutual = final[pair[0]] is not None and final[pair[0]][0] == pair[1] \
+            and final[pair[1]] is not None and final[pair[1]][0] == pair[0]
+        assert mutual == handshake, (name, final)
+        credit = -2 / 3 if mutual else 0.0
+        total = d_f + look + credit
+        svg.text(24, y + 7, name, 20, INK, bold=True)
+        svg.text(24, y + 32, "handshake: yes, from g6" if mutual else "handshake: no", 16, GREEN if mutual else MUTED)
+        pos = 0.0
+        for k, (value, (label, color)) in enumerate(zip((d_f, look, credit), terms)):
+            yy = y + 22 * k
+            if value == 0:
+                svg.text(zero_x + (8 if pos >= 0 else -8), yy + 5, f"{label} 0", 14, MUTED,
+                         "start" if pos >= 0 else "end")
+                continue
+            x1, x2 = zero_x + pos * scale, zero_x + (pos + value) * scale
+            svg.path([(x1, yy), (x2, yy)], color, 12)
+            text = f"{label} {value:+.4f}".replace("+1.0000", "+1").replace("-1.0000", "-1")
+            if k == 0:
+                svg.text((x1 + x2) / 2, yy - 11, text, 15, color, "middle", True)
+            else:
+                svg.text(x2 + (8 if value > 0 else -8), yy + 5, text, 15, color,
+                         "start" if value > 0 else "end", True)
+            pos += value
+        x_total = zero_x + total * scale
+        svg.path([(x_total, y - 12), (x_total, y + 56)], INK, 3)
+        svg.text(x_total + (10 if total > 0 else -10), y + 76, f"total {total:+.4f}", 17, INK,
+                 "start" if total > 0 else "end", bold=True)
+    svg.text(24, 660, "Without the credit SWAP(p4, p5) wins by 1/12. The credit of -2/3 is eight times larger and moves SWAP(p3, p4) to the front.", 17, MUTED)
+    svg.text(24, 684, "A credit never beats a full distance step: a SWAP that pushes a front pair apart still scores +1/3 at best.", 17, MUTED)
+    svg.save(FIGURES / "fusion-decision3.svg")
+
+
+def draw_fusion_figures():
+    draw_fusion_cancel()
+    draw_fusion_nodes()
+    draw_fusion_history()
+    draw_fusion_decision3()
+
+
 def build_pdf():
     body = subprocess.check_output([
         "pandoc", str(DESIGN / "SABRE_GUIDE.md"), "-f", "markdown+gfm_auto_identifiers", "-t", "typst",
@@ -347,7 +583,8 @@ def main():
     graph = SVG(470, "Initial dependency graph with current physical locations")
     draw_graph(graph, next(state for state in snapshots if state.name == "s0"), 12)
     graph.save(FIGURES / "initial-dag.svg")
-    print(f"Validated and generated {len(snapshots)} state snapshots and the initial DAG.")
+    draw_fusion_figures()
+    print(f"Validated and generated {len(snapshots)} state snapshots, the initial DAG and 4 fusion figures.")
     if not args.figures_only:
         build_pdf()
         print("Built design/SABRE_GUIDE.pdf")

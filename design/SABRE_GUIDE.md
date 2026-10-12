@@ -1468,337 +1468,317 @@ numbers.
 
 ## 11. Fusion credit: a SWAP right after a CX is cheaper
 
-### The idea
+### The idea in plain words
 
-A SWAP on positions a and b can be written as three CX gates:
+Every SWAP the router inserts is extra work for the device. Most devices have
+no native SWAP: it is built from **three CX gates**. Classic SABRE therefore
+treats every SWAP as costing the same, three CX gates' worth, no matter where
+it lands.
+
+This checkout notices a discount. If the two wires a SWAP would use have
+**just** run a CX together, a later optimization pass can merge that CX and
+the SWAP into fewer gates. On that pair, the SWAP really costs less than
+three CX. The **fusion credit** is the router's estimate of that discount. It
+is subtracted from the candidate's score, so a SWAP that can merge with the
+gate placed just before it looks more attractive than an otherwise identical
+SWAP elsewhere.
+
+### The worked example this section follows
+
+Everything below is shown on one concrete moment of the running route:
+**decision 3**, starting from snapshot S2 of section 7. At that moment:
+
+- The last gate emitted was g6 = CX(q4, q6). q4 was at p3 and q6 at p4, so it
+  ran as `CX(p3, p4)`, followed by the Z gate on q4.
+- The front gate is g7 = CX(q5, q4), with q5 at p5 and q4 at p3, distance 2.
+- The candidates are SWAP(p2, p3), SWAP(p3, p4) and SWAP(p4, p5).
+
+Classic SABRE picks SWAP(p4, p5). This checkout picks SWAP(p3, p4), because
+that SWAP lands on the same two wires as g6 and can merge with it. Four
+figures walk through why:
+
+1. Why a SWAP right after a CX is cheaper, drawn as circuits.
+2. How each routing node gets a cost estimate before routing starts.
+3. What each wire remembers as the route is built, event by event.
+4. How the credit changes the scores at decision 3.
+
+### Why a SWAP right after a CX is cheaper
+
+A SWAP on positions a and b is the same as three CX gates in a row:
 
 ```text
 SWAP(a, b) = CX(a, b); CX(b, a); CX(a, b)
 ```
 
-A CX undoes itself: applying the same CX twice in a row is the same as doing
-nothing. So if the circuit already has `CX(a, b)` immediately before the SWAP on
-the same two positions, the first two CX gates in the combined sequence cancel:
+A CX undoes itself: doing the same CX twice in a row is the same as doing
+nothing. So when g6 = `CX(p3, p4)` is followed by `SWAP(p3, p4)`, the CX
+already in the circuit and the first CX of the SWAP meet and cancel:
+
+![Why a SWAP right after a CX is cheaper. Panel 1: g6 = CX(p3, p4) followed by SWAP(p3, p4), 4 CX in total. Panel 2: the SWAP written as three CX; g6 and the SWAP's first CX are identical and adjacent, so they cancel. Panel 3: the two remaining CX, which have the same effect as g6 followed by the SWAP.](figures/sabre_states/fusion-cancel.svg)
+
+A CX followed by a SWAP therefore needs only **2 CX gates**, not 4. Throughout
+this section "cost" counts two-qubit gates only, in CX units. One-qubit gates
+such as H, Z or Rz are cheap and are not counted. (The real route has a Z
+gate on p3 between g6 and the SWAP. It is a one-qubit gate on the control
+wire, and it slides past the CX without changing anything, so the count above
+is unchanged.)
+
+**It still works with one-qubit gates in the way.** Read each sequence from
+left to right. The vertical bar separates the gates already in the circuit
+from the SWAP being appended; it is only a separator in this explanation, not
+a circuit barrier.
+
+Example 1: two CX gates, then a SWAP.
 
 ```text
-Before:  CX(a, b); CX(a, b); CX(b, a); CX(a, b)       4 CX
-After:                       CX(b, a); CX(a, b)       2 CX
-```
-
-A CX followed by a SWAP therefore needs only **2 CX gates in total** after
-optimization. Here, "cost" counts two-qubit gates in CX units; any one-qubit
-gates are excluded from this count.
-
-Here are two longer examples. Read each sequence from left to right; `H(a)`
-is a one-qubit gate on a. The vertical bar separates the existing block from
-the appended SWAP. It is just a separator in this explanation, not a circuit
-barrier.
-
-**Example 1: a block with 2 CX gates, followed by a SWAP.**
-
-```text
-Existing block                | Appended SWAP
+Already in the circuit         | Appended SWAP
 CX(b,a); H(a); CX(a,b)         | CX(a,b); CX(b,a); CX(a,b)
 ```
 
-Counting the two parts separately gives `2 + 3 = 5` CX gates. But the last
-`CX(a,b)` in the block and the first `CX(a,b)` in the SWAP are identical and
-adjacent, so they cancel. The whole sequence becomes:
+Counted separately this is `2 + 3 = 5` CX gates. But the last `CX(a,b)` on
+the left and the first `CX(a,b)` on the right are identical and adjacent, so
+they cancel:
 
 ```text
 CX(b,a); H(a); CX(b,a); CX(a,b)                 3 CX + 1 H
 ```
 
-This shorter circuit has exactly the same effect on **every input state**
-as the original block followed by the SWAP. The SWAP's effect is included in
-the three remaining CX gates; there is no separate SWAP left to execute.
+This shorter sequence does exactly the same thing to the two qubits as the
+original gates followed by the SWAP. The SWAP's effect is now inside those
+three CX gates; there is no separate SWAP left to run.
 
-**Example 2: a block with 3 CX gates, followed by a SWAP.**
+Example 2: three CX gates, then a SWAP.
 
 ```text
-Existing block                         | Appended SWAP
-CX(a,b); H(a); CX(b,a); CX(a,b)          | CX(a,b); CX(b,a); CX(a,b)
+Already in the circuit                 | Appended SWAP
+CX(a,b); H(a); CX(b,a); CX(a,b)        | CX(a,b); CX(b,a); CX(a,b)
 ```
 
-The separate count is `3 + 3 = 6` CX gates. Cancel the two `CX(a,b)` gates
-that meet at the separator:
+Counted separately, `3 + 3 = 6`. Cancel the two `CX(a,b)` gates at the
+separator, and then the two `CX(b,a)` gates that become adjacent:
 
 ```text
 CX(a,b); H(a); CX(b,a); CX(b,a); CX(a,b)        4 CX + 1 H
+CX(a,b); H(a); CX(a,b)                          2 CX + 1 H
 ```
 
-Now the two `CX(b,a)` gates are adjacent and cancel too:
+Here the merged result has **fewer** CX gates than the original run alone.
 
-```text
-CX(a,b); H(a); CX(a,b)                         2 CX + 1 H
-```
+**Any run of gates on one pair needs at most three CX.** The cancellations
+above are cases you can see by eye. There is also a general rule that does
+not depend on spotting cancellations: *a run of gates that all act on the
+same two qubits, however long, can always be rewritten as at most three CX
+gates plus one-qubit gates.* The reason, in one sentence, is that such a run
+does one fixed thing to those two qubits, and there is a standard recipe that
+builds any such action from three CX gates and a few one-qubit rotations.
+The proof is in
+[Vidal and Dawson, Theorem 1](https://arxiv.org/html/quant-ph/0307177); the
+mathematics is outside the scope of this guide. Qiskit's optimization passes
+apply this rewriting to two-qubit blocks after routing.
 
-Here the combined circuit uses **fewer** CX gates than the original block.
-This is why the bound says *at most* 3: some blocks simplify further.
+The rule has one condition: **everything in the run must stay on the same two
+qubits.** A gate that touches a third qubit, such as `CX(b, d)`, ends the
+run. So do measurements, resets, barriers, and other non-gate instructions.
 
-These examples use cancellations we can see directly. More generally,
-re-synthesis means calculating the combined action of the block and SWAP,
-then constructing a new circuit with that same action.
+Two consequences for the router:
 
-**Where the three-CX bound comes from.** The earlier cancellations illustrate
-particular cases; they do not prove the general bound. That bound comes from
-a decomposition theorem and a circuit construction:
+- Appending a SWAP to a run that already holds one CX gives 2 CX, as the
+  cancellation shows.
+- Appending a SWAP to a run that already holds two or three CX gives at most
+  3 CX, by the general rule. A run that is already at three CX absorbs the
+  SWAP for free.
 
-1. **A long sequence on two qubits still has one 4-by-4 matrix.** A state of
-   a and b has four amplitudes, corresponding to `00`, `01`, `10`, and `11`.
-   Each gate transforms these amplitudes, and multiplying the gates' matrices
-   gives the matrix `U` for the entire sequence. Whether the sequence contains
-   5 gates or 500, `U` is still 4-by-4. A long list of instructions can describe
-   a transformation that also has a much shorter implementation.
+So the router never needs to count a run beyond three CX. That is why every
+estimate below is **capped at 3**.
 
-2. **The KAK (Cartan) decomposition gives every such matrix a standard form.**
-   Ignoring an overall global phase, it says:
+### What the router remembers
 
-   ```text
-   U = (A tensor B) V(alpha, beta, gamma) (C tensor D)
-   V(alpha, beta, gamma) = exp[-i(alpha XX + beta YY + gamma ZZ)]
-   ```
+The router does not inspect gate sequences while it scores candidates; that
+would be far too slow. Instead it keeps a small amount of bookkeeping, in
+two steps: one before routing starts, one as gates are emitted.
 
-   Here A, B, C, and D are one-qubit gates: C and D run before V, and A and B
-   run afterward. `XX` means `X tensor X`, a Pauli X on each qubit; `YY` and
-   `ZZ` have the corresponding meanings. The middle operation V contains
-   the interaction between the qubits, described by three real angles
-   `alpha`, `beta`, and `gamma`. All the other work is in the one-qubit gates.
+**Step 1, before routing: each routing node gets a block estimate.** When the
+circuit is compressed for routing (section 18), consecutive operations that
+need the same two program qubits to be adjacent are grouped into one
+**routing node**. Each node carries a numeric field, **`block`**: a rough
+estimate of how many CX gates the node adds to a run on its pair.
 
-3. **There is a circuit for every V that uses exactly three CX gates.** The
-   existence of three angles alone does not prove this count. The constructive
-   part is a circuit whose one-qubit rotations can be adjusted to realize
-   *any* values of those angles. Adding A, B, C, and D introduces no further
-   CX gates. This is the proof strategy of
-   [Vidal and Dawson, Theorem 1](https://arxiv.org/html/quant-ph/0307177).
+![Step 1: each routing node carries a block estimate. A circuit on q0, q1, q2 with CX(q0, q1), H on q0, CX(q1, q0) and Rz on q1 grouped into node R1 for the pair (q0, q1), followed by CX(q1, q2) as node R2. The contributions 1, 0, 1, 0 give R1.block = 2; R2.block = 1.](figures/sabre_states/fusion-nodes.svg)
 
-For a concrete construction of step 3, the following sequence implements
-V up to a fixed global phase. Run the rows from top to bottom:
+In the figure, once q0 and q1 sit on adjacent positions, all four operations
+of R1 can run without another routing decision, so they form one node. The
+next operation, `CX(q1, q2)`, needs a different pair and becomes node R2,
+which must wait for R1. Grouping does not turn the operations into one
+hardware gate: when R1 is emitted, its four operations are emitted in order.
 
-| Step | Gates |
-| --- | --- |
-| 1 | `CX(a, b)` |
-| 2 | `Rx(2 alpha - pi/2)` on a |
-| 3 | H on a; `Rz(2 gamma)` on b |
-| 4 | `CX(a, b)` |
-| 5 | H on a; `Rz(-2 beta)` on b |
-| 6 | `CX(a, b)` |
-| 7 | `Rx(pi/2)` on a; `Rx(-pi/2)` on b |
-
-`Rx(theta)` and `Rz(theta)` are one-qubit rotations, with the convention
-`Rp(theta) = exp(-i theta P / 2)`. Multiplying the matrices in this table
-gives `exp(i pi/4) V(alpha, beta, gamma)`. The leading factor is a global
-phase, which can be tracked separately. The rotation angles change with V,
-but the circuit always contains just **three CX gates**, at steps 1, 4, and 6.
-
-Now apply this to routing. If a block has matrix U, appending a SWAP gives
-`U_total = SWAP * U`, another 4-by-4 unitary matrix. Decompose U_total and use
-the same three-CX construction with its new one-qubit gates and angles.
-**We replace the entire sequence with a circuit for its final action.** The
-construction works even if none of the original neighboring gates cancel.
-It assumes arbitrary one-qubit rotations are available; those rotations
-are essential and are excluded from the CX count.
-
-The restriction to one pair matters. `H(a)` in these examples stays within
-the pair a, b. A gate such as `CX(b,d)` would involve a third qubit d, so the
-whole sequence would no longer be a two-qubit block and this bound would not
-apply to it. Measurements also fall outside this unitary re-synthesis rule.
-
-Suppose the router is considering `SWAP(a, b)`. Look at the gates it has
-already placed most recently on those two physical wires. If they form an
-eligible run of gates confined to a and b, that run is the **existing block**
-that might be combined with the proposed SWAP.
-
-The router keeps a small number `c` for this run: its rough estimate of how
-many CX gates would implement the run **before adding the SWAP**. For a run
-containing only CX gates and one-qubit gates, it counts the CX gates and
-stores at most 3:
-
-| CX gates in the existing run | Stored estimate `c` |
-| --- | --- |
-| 1 | 1 |
-| 2 | 2 |
-| 3 | 3 |
-| 4 | 3 |
-| 10 | 3 |
-
-This is what **"capped at 3"** means: `c = min(3, count)`. The three-CX
-synthesis bound motivates the cap. The router still retains the original
-gates; storing `c = 3` does not itself rewrite them. Nor does it prove that
-the minimum is exactly 3: the router does not search for cancellations when
-computing this estimate. Other gate types receive the contributions listed
-below under "How the router keeps track".
-
-For an eligible block, `c` is therefore 1, 2, or 3. The router combines two
-observations:
-
-- **If `c = 1`:** the CX-and-SWAP cancellation above motivates an estimate of
-  2 CX gates for the combined block.
-- **If `c = 2` or `c = 3`:** the general two-qubit synthesis result gives an
-  upper bound of 3 CX gates for the combined block.
-
-These cases fit into one formula:
-
-```text
-Estimated total cost after fusion = min(3, c + 1)
-```
-
-The `c + 1` gives 2 when `c = 1`; the cap at 3 handles the other two cases.
-For example, when `c = 3`, keeping the block and SWAP separate would cost
-`3 + 3 = 6` CX gates, while rewriting them together needs at most 3. In this
-estimate, the SWAP adds no two-qubit gates to that block's cost.
-
-This is a routing estimate, not a guarantee of the final gate count. Qiskit's
-optimization passes can perform the re-synthesis after routing; the router
-only predicts the saving and uses it to help choose a SWAP.
-
-### How the router keeps track
-
-A **routing node** is a record in the router's dependency graph. It represents
-one or more original circuit operations that the router handles together.
-For example, once q0 and q1 are on adjacent physical positions, this whole
-sequence can run without another routing decision:
-
-```text
-CX(q0, q1); H(q0); CX(q1, q0); Rz(0.2) on q1
-```
-
-The router groups these four operations into one two-qubit routing node R1
-for the pair (q0, q1). If the next operation is `CX(q1, q2)`, that needs a
-different pair to be adjacent and becomes another node R2:
-
-```text
-R1: four operations on q0, q1  --->  R2: CX(q1, q2)
-```
-
-The arrow means R2 must wait for R1. Grouping the operations does not turn
-them into a single hardware gate: when R1 is emitted, its original four
-operations are emitted in order. Section 18 explains this compression in
-more detail.
-
-**`block` is the name of a numeric field in that record.** `R1.block` stores
-R1's estimated contribution to the CX cost. The operations themselves are
-recorded separately. The router assigns contributions as follows:
+The estimate adds up a fixed contribution per operation and caps the total
+at 3:
 
 | Operation in the node | Contribution to `node.block` |
 | --- | --- |
 | CX, CY, CZ, ECR | 1 |
 | Any other two-qubit gate | 3 (worst case) |
 | One-qubit gate folded into the node | 0 |
-| Measurement, reset, barrier, delay, control flow, and other non-gate instructions | none: these end a block |
+| Measurement, reset, barrier, delay, control flow, and other non-gate instructions | none: the node's `block` becomes `None`, meaning "this node ends any run" |
 
-For a node containing several gates, add their contributions and cap the
-sum at 3. If any operation ends a block, the node's field is `None` instead.
-In the example above:
+The cap means a node with four CX, or ten, stores 3 just like a node with
+three. The original gates are kept; the cap only limits the estimate. The
+router does not look for cancellations here, so Example 2's eventual two-CX
+result is not predicted. The estimate is deliberately coarse.
+
+In the running example every two-qubit node is a single CX, sometimes with
+one-qubit gates folded in (g4 carries two H gates, g6 carries a Z), so every
+node has `block = 1`.
+
+**Step 2, during routing: each physical position remembers its latest
+partner.** For every physical position p the router keeps
 
 ```text
-R1.block = min(3, 1 + 0 + 1 + 0) = 2
-                 CX  H   CX  Rz
-R2.block = 1
+last_block[p] = (partner, c)
 ```
 
-There are **two different quantities** to keep separate:
+which reads: "the last two-qubit work on wire p was with wire `partner`, and
+that run is worth about `c` CX gates (at most 3)". Here `c` is the running
+total for the current run on that pair. The next figure replays the running
+route from decision 1 up to decision 3 and shows these records after every
+event. A solid green link means the two wires name each other. A dashed
+arrow means a wire still names a partner that has since moved on to someone
+else.
 
-| Quantity | What it describes | When it is computed |
-| --- | --- | --- |
-| `node.block` | The contribution of the original operations grouped into one routing node. | When the circuit is compressed, before routing. |
-| `c` | The accumulated estimate for the current run of emitted gates on one physical pair. | During routing, as nodes are emitted. |
+![Step 2: what each wire remembers, event by event. Eight strips, one per event from SWAP(p2, p3) through g5 = CX(p1, p2), each showing the six wires p0 to p5 with green links where both wires name each other and dashed arrows for one-sided records. After the last event, p1 and p2 name each other and p3 and p4 name each other, while p0 still names p1 and p5 still names p4.](figures/sabre_states/fusion-history.svg)
 
-For example, suppose R1 is emitted with q0 at p2 and q1 at p3, and there is
-no earlier block to continue on that pair. Its `block` value of 2 starts a
-new accumulated estimate `c = 2` on p2, p3. A proposed `SWAP(p2, p3)` would
-then be scored using `c = 2`: separate cost `2 + 3 = 5`, estimated combined
-cost `min(3, 2 + 1) = 3`.
+Read the strips from top to bottom:
 
-If an emitted node continues an existing eligible block on the same physical
-pair, its contribution is added: `c = min(3, old c + node.block)`. If it starts
-a fresh block, `c` starts at `node.block`.
+- **SWAP(p2, p3).** The first decision. Nothing has been emitted yet, so
+  there is nothing to clear.
+- **g1 = CX(p1, p2).** The first gate on the pair (p1, p2): p1 and p2 now
+  name each other with `c = 1`.
+- **g3 = CX(p0, p1).** p0 and p1 name each other. p1's old record, which
+  named p2, is overwritten. p2 still names p1, but p1 no longer names p2:
+  the dashed arrow. A SWAP on (p1, p2) could no longer merge with g1,
+  because g1 is no longer the latest thing on p1.
+- **SWAP(p3, p4).** Decision 2. Both wires are cleared; they were empty
+  anyway.
+- **g2, g4, g6, g5.** Each gate makes its two wires name each other. Watch
+  g6 = CX(p3, p4): p3 used to name p2 and p4 used to name p5, so this is a
+  fresh run with `c = 1`, and p2 and p5 are left with one-sided records.
 
-During routing, every physical position remembers its **most recent block**:
-`last_block[p] = (partner, c)`, meaning "the last two-qubit work on p was with
-`partner`, and the block costs about `c` gates (at most 3)". The rules:
+The rules the figure follows:
 
 | Event | Effect on `last_block` |
 | --- | --- |
-| A two-qubit node is emitted on (a, b) | If a and b already named each other, the block continues: `c = min(3, old c + node's block)`. Otherwise a fresh block starts with the node's value. Both a and b now name each other. If the node's `block` is none (it absorbed a block-ending operation), both records are cleared instead. |
-| A SWAP is chosen on (a, b) | Both records are cleared. |
-| Any node that is not a two-qubit routing node runs on p (measurement, reset, barrier, delay, control flow, an operation on three or more qubits) | p's record is cleared (final routing only; see section 17). |
+| A two-qubit node is emitted on (a, b) | If a and b already name each other, the run continues: `c = min(3, old c + node.block)`. Otherwise a fresh run starts with `c = node.block`. Both a and b now name each other. If the node's `block` is `None`, both records are cleared instead. |
+| A SWAP is chosen on (a, b) | Both records are cleared. The credit for that run has been used; the next gate on the pair starts a new run. |
+| Any other node runs on p (measurement, reset, barrier, delay, control flow, an operation on three or more qubits) | p's record is cleared (final routing only; see section 17). |
+
+The "run continues" case does not occur in the running example, because no
+two consecutive nodes land on the same pair of wires. It would look like
+this: if R1 from the Step 1 figure were emitted on (p2, p3) with no earlier
+run there, the record would be `c = 2`; if another node with `block = 1` on
+the same pair followed, `c` would become `min(3, 2 + 1) = 3`.
+
+Two quantities are easy to mix up, so here they are side by side:
+
+| Quantity | What it describes | When it is computed |
+| --- | --- | --- |
+| `node.block` | One routing node's contribution, from its original operations. | When the circuit is compressed, before routing. |
+| `c` | The accumulated estimate for the current run of emitted gates on one physical pair. | During routing, as nodes are emitted. |
+
+**The handshake.** A candidate `SWAP(a, b)` qualifies for a credit only when
+`last_block[a]` names b **and** `last_block[b]` names a: a solid green link
+in the figure, never a dashed arrow. Both must agree because a wire can move
+on, as the g3 strip shows. The one-sided record correctly earns nothing.
 
 Gates that are emitted at the very start, before any SWAP, follow the same
 rules: the routine that applies them (`advance_routed`) runs for the initially
 executable gates too, and likewise for the ready times of section 12. Section
 16 relies on this.
 
-### The credit
+### The credit, in numbers
 
-A candidate SWAP on (a, b) gets a credit only if `last_block[a]` names b
-**and** `last_block[b]` names a. Then, with `c` the block's cost:
+When a candidate passes the handshake with run cost `c`, the router compares
+two estimates:
 
 ```text
-without fusion:  c + 3          (the block, then a full SWAP)
-with fusion:     min(3, c + 1)  (estimated total for the block and SWAP)
+without fusion:  c + 3          (the run, then a full three-CX SWAP)
+with fusion:     min(3, c + 1)  (the run and the SWAP merged)
 saving         = (c + 3) − min(3, c + 1)
-credit         = −saving / 3    (in units of "one SWAP", the same units as distance)
+credit         = −saving / 3
 ```
 
-| Previous block cost c | Separate cost | Estimated fused cost | Saving | Credit |
+The merged estimate `min(3, c + 1)` is just the two consequences from
+earlier written as one formula: `c + 1` gives 2 when `c = 1` (the
+cancellation), and the cap at 3 covers `c = 2` and `c = 3` (the general
+rule).
+
+The division by 3 converts gates into the score's units. The distance terms
+of sections 6 and 8 count SWAPs, and one SWAP is three CX, so a saving of
+two CX is two thirds of a SWAP.
+
+| Run cost c | Separate cost | Merged estimate | Saving | Credit |
 | --- | --- | --- | --- | --- |
-| no eligible block | — | — | 0 | 0 |
+| no qualifying run | — | — | 0 | 0 |
 | 1 (one CX) | 4 | 2 | 2 | −2/3 |
 | 2 | 5 | 3 | 2 | −2/3 |
 | 3 | 6 | 3 | 3 | −1 |
 
 A credit of −2/3 is worth two thirds of a distance step. That is deliberately
-large: it is the estimated saving in real gates.
+large: it is the estimated saving in real gates, not a tie-breaker.
 
-### The walkthrough, with fusion credit
+This is a routing estimate, not a promise about the final gate count. The
+router still emits a complete three-CX SWAP. Whether it is merged later is up
+to Qiskit's optimization passes; the router only predicts the saving and uses
+it to choose.
 
-Follow `last_block` through Part II's route:
+### Decision 3, scored
 
-| Event | last_block afterward (position: partner, cost) |
-| --- | --- |
-| SWAP(p2, p3) | p2 and p3 cleared (they were empty anyway) |
-| g1 = CX on (p1, p2) | p1: (p2, 1), p2: (p1, 1) |
-| g3 = CX on (p0, p1) | p0: (p1, 1), p1: (p0, 1); p2 still names p1 |
-| SWAP(p3, p4) | p3 and p4 cleared |
-| g2 = CX on (p5, p4) | p4: (p5, 1), p5: (p4, 1) |
-| g4 = CX on (p2, p3), with the two H gates | p2: (p3, 1), p3: (p2, 1); the folded H gates add 0 |
-| g6 = CX on (p3, p4), with the Z gate | p3 named p2 and p4 named p5, so this is a fresh block: p3: (p4, 1), p4: (p3, 1) |
-| g5 = CX on (p1, p2) | p1: (p2, 1), p2: (p1, 1) |
+Now put the pieces together. The last strip of the history figure is the
+wire memory at S2: p1 and p2 name each other, p3 and p4 name each other, and
+p0 and p5 hold one-sided records. Of the three candidates, only SWAP(p3, p4)
+passes the handshake, thanks to g6. Its run cost is `c = 1`, so its credit
+is −2/3.
 
-**Decisions 1 and 2.** No two-qubit gate had yet been emitted on any
-candidate pair, so no credit applied.
+![Decision 3: the credit overturns the classic ranking. Top: the wire memory at S2. Bottom: for each candidate, the front-distance change, the lookahead term and the credit laid end to end on a number line from −2 to +1. SWAP(p2, p3) totals +0.9167, SWAP(p3, p4) totals −1.5833 and wins, SWAP(p4, p5) totals −1.](figures/sabre_states/fusion-decision3.svg)
 
-**Decision 3.** Candidates (p2, p3), (p3, p4), (p4, p5):
+The same numbers as a table:
 
-| Candidate | ΔD_F | w × ΔD_E | Both endpoints name each other? | Credit | Sum |
+| Candidate | ΔD_F | w × ΔD_E | Handshake? | Credit | Sum |
 | --- | --- | --- | --- | --- | --- |
 | SWAP(p2, p3) | +1 | −0.0833 | No: p2 names p1, p3 names p4 | 0 | +0.9167 |
 | SWAP(p3, p4) | −1 | +0.0833 | Yes, from g6 | −2/3 | **−1.5833** |
 | SWAP(p4, p5) | −1 | 0 | No: p4 names p3 | 0 | −1.0000 |
 
-The credit chooses SWAP(p3, p4): after optimization, `CX(p3, p4); SWAP(p3, p4)`
-becomes two CX gates instead of four. Note that this is not a tie-break.
-Without the credit SWAP(p4, p5) wins by one twelfth; a credit worth two thirds
-of a distance step overturns that. The credit can beat the lookahead term,
-whose weight is at most `w` per gate, but it cannot beat a full distance step
-in the wrong direction: a SWAP that moves a front pair *apart* (ΔD_F = +1)
-still scores +1/3 with the credit, as decisions 4 to 6 show.
+Read the figure row by row. SWAP(p2, p3) moves q4 away from q5, so its
+front-distance term is +1 and it is out of the running. SWAP(p3, p4) and
+SWAP(p4, p5) both bring g7's qubits together, so both start at −1. Classic
+SABRE then separates them only by the lookahead: SWAP(p3, p4) moves q4 one
+step further from q1, which g8 will need, and pays one twelfth for it. On
+distances alone SWAP(p4, p5) wins by that twelfth. The credit of −2/3 is
+eight times larger and pulls SWAP(p3, p4) well in front.
 
-After SWAP(p3, p4) is chosen, p3 and p4 are cleared. g7 = CX on (p5, p4) then
-makes p4 and p5 name each other, so SWAP(p4, p5) carries a credit of −2/3 at
-decisions 4, 5 and 6. It never wins, because it moves q4 away from q1: its
-score is +1 − 2/3 = +1/3 each time, against −1 for the candidates that close
-the distance.
+This is not a tie-break. The credit can beat the lookahead term, whose weight
+is at most `w` per gate. It cannot beat a full distance step in the wrong
+direction: a SWAP that moves a front pair *apart* (ΔD_F = +1) still scores
++1/3 with the credit.
+
+**Decisions 1 and 2** had no credit: no two-qubit gate had yet been emitted
+on any candidate pair, as the first and fourth strips of the history figure
+show.
+
+**Decisions 4 to 6** show the limit. After SWAP(p3, p4) is chosen, p3 and p4
+are cleared. g7 = CX on (p5, p4) then makes p4 and p5 name each other, so
+SWAP(p4, p5) carries a credit of −2/3 at decisions 4, 5 and 6. It never wins,
+because it moves q4 away from q1: its score is +1 − 2/3 = +1/3 each time,
+against −1 for the candidates that close the distance.
 
 ### What the estimate does not check
 
-The classifier is coarse on purpose, so that it costs almost nothing per
+The bookkeeping is coarse on purpose, so that it costs almost nothing per
 candidate. It does not verify that the later optimization pass will really
-accept the block (parameters, opaque instructions, and optimization level all
-matter), so a credited saving can fail to materialize. That affects route
-quality only, never correctness: the router still emits a complete SWAP, and
-whether it gets merged later is up to other passes.
+merge the run and the SWAP: gate parameters, opaque instructions, and the
+optimization level all matter, so a credited saving can fail to materialize.
+That affects route quality only, never correctness. The router always emits a
+complete SWAP, and whether it gets merged later is up to other passes.
 
 ## 12. Ready time: prefer wires that are free sooner
 

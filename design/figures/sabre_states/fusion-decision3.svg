@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="700" viewBox="0 0 1000 700" role="img"><title>Decision 3: the fusion credit overturns the classic ranking</title>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8" fill="#687e91"/></marker></defs>
+<rect width="1000" height="700" fill="white"/>
+<text x="24" y="35" font-family="DejaVu Sans, sans-serif" font-size="27" fill="#182c42" text-anchor="start" font-weight="bold">Decision 3: the credit overturns the classic ranking</text>
+<text x="24" y="67" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#182c42" text-anchor="start" font-weight="normal">Top: wire memory at S2 (the last strip of the previous figure). Bottom: each candidate&#x27;s score, one term at a time.</text>
+<text x="24" y="158" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#526477" text-anchor="start" font-weight="normal">wire memory at S2</text>
+<path d="M300.0,152 L428.0,152" fill="none" stroke="#d5dee7" stroke-width="3"/>
+<path d="M428.0,152 L556.0,152" fill="none" stroke="#d5dee7" stroke-width="3"/>
+<path d="M556.0,152 L684.0,152" fill="none" stroke="#d5dee7" stroke-width="3"/>
+<path d="M684.0,152 L812.0,152" fill="none" stroke="#d5dee7" stroke-width="3"/>
+<path d="M812.0,152 L940.0,152" fill="none" stroke="#d5dee7" stroke-width="3"/>
+<path d="M344.0,180 L378.0,180" fill="none" stroke="#875400" stroke-width="2.5" stroke-dasharray="7,5" marker-end="url(#arrow)"/>
+<path d="M428.0,152 L556.0,152" fill="none" stroke="#176850" stroke-width="7"/>
+<text x="492.0" y="122" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#176850" text-anchor="middle" font-weight="bold">c = 1</text>
+<path d="M684.0,152 L812.0,152" fill="none" stroke="#176850" stroke-width="7"/>
+<text x="748.0" y="122" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#176850" text-anchor="middle" font-weight="bold">c = 1</text>
+<path d="M896.0,180 L862.0,180" fill="none" stroke="#875400" stroke-width="2.5" stroke-dasharray="7,5" marker-end="url(#arrow)"/>
+<rect x="258.0" y="132" width="84" height="40" rx="6" fill="#f5f8fb" stroke="#d5dee7"/>
+<text x="300.0" y="159" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">q1,p0</text>
+<rect x="386.0" y="132" width="84" height="40" rx="6" fill="#f5f8fb" stroke="#d5dee7"/>
+<text x="428.0" y="159" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">q2,p1</text>
+<rect x="514.0" y="132" width="84" height="40" rx="6" fill="#f5f8fb" stroke="#d5dee7"/>
+<text x="556.0" y="159" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">q3,p2</text>
+<rect x="642.0" y="132" width="84" height="40" rx="6" fill="#f5f8fb" stroke="#d5dee7"/>
+<text x="684.0" y="159" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">q4,p3</text>
+<rect x="770.0" y="132" width="84" height="40" rx="6" fill="#f5f8fb" stroke="#d5dee7"/>
+<text x="812.0" y="159" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">q6,p4</text>
+<rect x="898.0" y="132" width="84" height="40" rx="6" fill="#f5f8fb" stroke="#d5dee7"/>
+<text x="940.0" y="159" font-family="DejaVu Sans, sans-serif" font-size="19" fill="#182c42" text-anchor="middle" font-weight="normal">q5,p5</text>
+<path d="M300,262 L960,262" fill="none" stroke="#687e91" stroke-width="2"/>
+<path d="M299.99999999999994,256 L299.99999999999994,268" fill="none" stroke="#687e91" stroke-width="2"/>
+<text x="299.99999999999994" y="250" font-family="DejaVu Sans, sans-serif" font-size="16" fill="#526477" text-anchor="middle" font-weight="normal">-2</text>
+<path d="M488.57142857142856,256 L488.57142857142856,268" fill="none" stroke="#687e91" stroke-width="2"/>
+<text x="488.57142857142856" y="250" font-family="DejaVu Sans, sans-serif" font-size="16" fill="#526477" text-anchor="middle" font-weight="normal">-1</text>
+<path d="M677.1428571428571,256 L677.1428571428571,268" fill="none" stroke="#687e91" stroke-width="2"/>
+<text x="677.1428571428571" y="250" font-family="DejaVu Sans, sans-serif" font-size="16" fill="#526477" text-anchor="middle" font-weight="normal">0</text>
+<path d="M865.7142857142857,256 L865.7142857142857,268" fill="none" stroke="#687e91" stroke-width="2"/>
+<text x="865.7142857142857" y="250" font-family="DejaVu Sans, sans-serif" font-size="16" fill="#526477" text-anchor="middle" font-weight="normal">+1</text>
+<text x="24" y="268" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#526477" text-anchor="start" font-weight="normal">score (lower wins)</text>
+<path d="M677.1428571428571,262 L677.1428571428571,630" fill="none" stroke="#d5dee7" stroke-width="2" stroke-dasharray="7,5"/>
+<text x="24" y="327" font-family="DejaVu Sans, sans-serif" font-size="20" fill="#182c42" text-anchor="start" font-weight="bold">SWAP(p2, p3)</text>
+<text x="24" y="352" font-family="DejaVu Sans, sans-serif" font-size="16" fill="#526477" text-anchor="start" font-weight="normal">handshake: no</text>
+<path d="M677.1428571428571,320 L865.7142857142857,320" fill="none" stroke="#165f98" stroke-width="12"/>
+<text x="771.4285714285713" y="309" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#165f98" text-anchor="middle" font-weight="bold">front distance +1</text>
+<path d="M865.7142857142857,342 L850.0,342" fill="none" stroke="#875400" stroke-width="12"/>
+<text x="842.0" y="347" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#875400" text-anchor="end" font-weight="bold">lookahead -0.0833</text>
+<text x="685.1428571428571" y="369" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#526477" text-anchor="start" font-weight="normal">credit 0</text>
+<path d="M850.0,308 L850.0,376" fill="none" stroke="#182c42" stroke-width="3"/>
+<text x="860.0" y="396" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#182c42" text-anchor="start" font-weight="bold">total +0.9167</text>
+<text x="24" y="437" font-family="DejaVu Sans, sans-serif" font-size="20" fill="#182c42" text-anchor="start" font-weight="bold">SWAP(p3, p4)</text>
+<text x="24" y="462" font-family="DejaVu Sans, sans-serif" font-size="16" fill="#176850" text-anchor="start" font-weight="normal">handshake: yes, from g6</text>
+<path d="M677.1428571428571,430 L488.57142857142856,430" fill="none" stroke="#165f98" stroke-width="12"/>
+<text x="582.8571428571429" y="419" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#165f98" text-anchor="middle" font-weight="bold">front distance -1</text>
+<path d="M488.57142857142856,452 L504.2857142857142,452" fill="none" stroke="#875400" stroke-width="12"/>
+<text x="512.2857142857142" y="457" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#875400" text-anchor="start" font-weight="bold">lookahead +0.0833</text>
+<path d="M504.2857142857142,474 L378.57142857142856,474" fill="none" stroke="#176850" stroke-width="12"/>
+<text x="370.57142857142856" y="479" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#176850" text-anchor="end" font-weight="bold">credit -0.6667</text>
+<path d="M378.57142857142856,418 L378.57142857142856,486" fill="none" stroke="#182c42" stroke-width="3"/>
+<text x="368.57142857142856" y="506" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#182c42" text-anchor="end" font-weight="bold">total -1.5833</text>
+<text x="24" y="547" font-family="DejaVu Sans, sans-serif" font-size="20" fill="#182c42" text-anchor="start" font-weight="bold">SWAP(p4, p5)</text>
+<text x="24" y="572" font-family="DejaVu Sans, sans-serif" font-size="16" fill="#526477" text-anchor="start" font-weight="normal">handshake: no</text>
+<path d="M677.1428571428571,540 L488.57142857142856,540" fill="none" stroke="#165f98" stroke-width="12"/>
+<text x="582.8571428571429" y="529" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#165f98" text-anchor="middle" font-weight="bold">front distance -1</text>
+<text x="669.1428571428571" y="567" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#526477" text-anchor="end" font-weight="normal">lookahead 0</text>
+<text x="669.1428571428571" y="589" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#526477" text-anchor="end" font-weight="normal">credit 0</text>
+<path d="M488.57142857142856,528 L488.57142857142856,596" fill="none" stroke="#182c42" stroke-width="3"/>
+<text x="478.57142857142856" y="616" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#182c42" text-anchor="end" font-weight="bold">total -1.0000</text>
+<text x="24" y="660" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#526477" text-anchor="start" font-weight="normal">Without the credit SWAP(p4, p5) wins by 1/12. The credit of -2/3 is eight times larger and moves SWAP(p3, p4) to the front.</text>
+<text x="24" y="684" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#526477" text-anchor="start" font-weight="normal">A credit never beats a full distance step: a SWAP that pushes a front pair apart still scores +1/3 at best.</text>
+</svg>
