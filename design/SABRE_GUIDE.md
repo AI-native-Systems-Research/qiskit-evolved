@@ -979,25 +979,61 @@ wrappers' decay configuration (section 13), not universal constants of SABRE.
 ### 8.1 What does "spread over different wires" mean?
 
 A **wire** here means a fixed physical position, such as p1, not whichever
-program qubit currently occupies it. Consider these alternatives after the
-router has inserted `SWAP(p0, p1)`:
+program qubit currently occupies it. **SWAPs that share a physical qubit must
+run one after another; SWAPs on separate qubits can run simultaneously.**
+Decay encourages choices that allow this parallel execution.
 
-| Possible next SWAP | Shares a wire with SWAP(p0, p1)? | Scheduling consequence |
+Consider a small example with four physical positions and a gate needed
+between program qubits **A and B**:
+
+```text
+Position:   p0 ---- p1 ---- p2 ---- p3
+Occupant:    A       X       Y       B
+```
+
+Suppose SABRE first chooses `SWAP(p0, p1)`:
+
+```text
+Position:   p0 ---- p1 ---- p2 ---- p3
+Occupant:    X       A       Y       B
+```
+
+Now two choices bring A and B next to each other:
+
+| Next SWAP | Resulting occupants, p0 to p3 | Relationship to the first SWAP |
 | --- | --- | --- |
-| SWAP(p1, p2) | Yes, p1 | Must wait for the earlier SWAP on p1 to finish. |
-| SWAP(p3, p4) | No | Can overlap with that SWAP if its own earlier dependencies allow it. |
+| SWAP(p1, p2) | `[X, Y, A, B]` | Shares p1, so must wait for the first SWAP to finish. |
+| SWAP(p2, p3) | `[X, A, B, Y]` | Uses separate wires, so can run alongside the first SWAP. |
 
-Both alternatives add **one** SWAP to the count. But reusing p1 extends a
-chain of operations that must run in sequence. Choosing disjoint wires can
-allow more parallel work and therefore less **depth**. The original
+Both routes use **two SWAPs** and enable the desired gate. Assuming the wires
+were initially free and each SWAP takes one time slot, their execution can
+look like this:
+
+```text
+Reuse p1:
+    Time slot 1:  SWAP(p0, p1)
+    Time slot 2:  SWAP(p1, p2)
+    Then:         gate on A and B
+
+Use separate wires:
+    Time slot 1:  SWAP(p0, p1) AND SWAP(p2, p3)
+    Then:         gate on A and B
+```
+
+**SABRE choosing a SWAP second does not mean the device must execute it
+second.** The compiler constructs the circuit sequentially, but independent
+operations can execute together. Reusing p1 extends a chain of operations
+that must run in sequence; choosing disjoint wires allows the same SWAP count
+with less **depth** in this example. The original
 [SABRE paper](https://arxiv.org/abs/1809.02573) introduces decay to encourage
 this trade-off between gate count and depth.
 
 Decay does not build a schedule or know when a wire is actually free. It uses
-recent SWAP use as a cheap hint. "The router chooses SWAP B after SWAP A" is
-an order of compiler decisions; it does not force B to run later on the device
-if A and B are independent. Also, fresh wires are only a preference among
-legal candidates: decay does not add hardware edges to the candidate list.
+recent SWAP use as a cheap hint: in general, separate wires can overlap only
+if their earlier dependencies allow it. Fresh wires are only a preference
+among legal candidates, and reusing a wire can still win if it makes enough
+additional routing progress. Decay does not add hardware edges to the
+candidate list.
 
 ### 8.2 The memory: one multiplier per physical position
 
@@ -1449,26 +1485,234 @@ Before:  CX(a, b); CX(a, b); CX(b, a); CX(a, b)       4 CX
 After:                       CX(b, a); CX(a, b)       2 CX
 ```
 
-A CX followed by a SWAP costs 2 native gates, not 4. More generally, *any*
-sequence of gates on one pair of qubits, however long, can be rewritten as at
-most 3 CX gates plus one-qubit gates. So a block that already "costs" `c` gates
-grows to only `min(3, c + 1)` when a SWAP is appended, instead of `c + 3`. Qiskit's optimization passes perform this
-re-synthesis after routing. The router does not do it; it only *predicts* it
-and lets the prediction influence which SWAP it chooses.
+A CX followed by a SWAP therefore needs only **2 CX gates in total** after
+optimization. Here, "cost" counts two-qubit gates in CX units; any one-qubit
+gates are excluded from this count.
+
+Here are two longer examples. Read each sequence from left to right; `H(a)`
+is a one-qubit gate on a. The vertical bar separates the existing block from
+the appended SWAP. It is just a separator in this explanation, not a circuit
+barrier.
+
+**Example 1: a block with 2 CX gates, followed by a SWAP.**
+
+```text
+Existing block                | Appended SWAP
+CX(b,a); H(a); CX(a,b)         | CX(a,b); CX(b,a); CX(a,b)
+```
+
+Counting the two parts separately gives `2 + 3 = 5` CX gates. But the last
+`CX(a,b)` in the block and the first `CX(a,b)` in the SWAP are identical and
+adjacent, so they cancel. The whole sequence becomes:
+
+```text
+CX(b,a); H(a); CX(b,a); CX(a,b)                 3 CX + 1 H
+```
+
+This shorter circuit has exactly the same effect on **every input state**
+as the original block followed by the SWAP. The SWAP's effect is included in
+the three remaining CX gates; there is no separate SWAP left to execute.
+
+**Example 2: a block with 3 CX gates, followed by a SWAP.**
+
+```text
+Existing block                         | Appended SWAP
+CX(a,b); H(a); CX(b,a); CX(a,b)          | CX(a,b); CX(b,a); CX(a,b)
+```
+
+The separate count is `3 + 3 = 6` CX gates. Cancel the two `CX(a,b)` gates
+that meet at the separator:
+
+```text
+CX(a,b); H(a); CX(b,a); CX(b,a); CX(a,b)        4 CX + 1 H
+```
+
+Now the two `CX(b,a)` gates are adjacent and cancel too:
+
+```text
+CX(a,b); H(a); CX(a,b)                         2 CX + 1 H
+```
+
+Here the combined circuit uses **fewer** CX gates than the original block.
+This is why the bound says *at most* 3: some blocks simplify further.
+
+These examples use cancellations we can see directly. More generally,
+re-synthesis means calculating the combined action of the block and SWAP,
+then constructing a new circuit with that same action.
+
+**Where the three-CX bound comes from.** The earlier cancellations illustrate
+particular cases; they do not prove the general bound. That bound comes from
+a decomposition theorem and a circuit construction:
+
+1. **A long sequence on two qubits still has one 4-by-4 matrix.** A state of
+   a and b has four amplitudes, corresponding to `00`, `01`, `10`, and `11`.
+   Each gate transforms these amplitudes, and multiplying the gates' matrices
+   gives the matrix `U` for the entire sequence. Whether the sequence contains
+   5 gates or 500, `U` is still 4-by-4. A long list of instructions can describe
+   a transformation that also has a much shorter implementation.
+
+2. **The KAK (Cartan) decomposition gives every such matrix a standard form.**
+   Ignoring an overall global phase, it says:
+
+   ```text
+   U = (A tensor B) V(alpha, beta, gamma) (C tensor D)
+   V(alpha, beta, gamma) = exp[-i(alpha XX + beta YY + gamma ZZ)]
+   ```
+
+   Here A, B, C, and D are one-qubit gates: C and D run before V, and A and B
+   run afterward. `XX` means `X tensor X`, a Pauli X on each qubit; `YY` and
+   `ZZ` have the corresponding meanings. The middle operation V contains
+   the interaction between the qubits, described by three real angles
+   `alpha`, `beta`, and `gamma`. All the other work is in the one-qubit gates.
+
+3. **There is a circuit for every V that uses exactly three CX gates.** The
+   existence of three angles alone does not prove this count. The constructive
+   part is a circuit whose one-qubit rotations can be adjusted to realize
+   *any* values of those angles. Adding A, B, C, and D introduces no further
+   CX gates. This is the proof strategy of
+   [Vidal and Dawson, Theorem 1](https://arxiv.org/html/quant-ph/0307177).
+
+For a concrete construction of step 3, the following sequence implements
+V up to a fixed global phase. Run the rows from top to bottom:
+
+| Step | Gates |
+| --- | --- |
+| 1 | `CX(a, b)` |
+| 2 | `Rx(2 alpha - pi/2)` on a |
+| 3 | H on a; `Rz(2 gamma)` on b |
+| 4 | `CX(a, b)` |
+| 5 | H on a; `Rz(-2 beta)` on b |
+| 6 | `CX(a, b)` |
+| 7 | `Rx(pi/2)` on a; `Rx(-pi/2)` on b |
+
+`Rx(theta)` and `Rz(theta)` are one-qubit rotations, with the convention
+`Rp(theta) = exp(-i theta P / 2)`. Multiplying the matrices in this table
+gives `exp(i pi/4) V(alpha, beta, gamma)`. The leading factor is a global
+phase, which can be tracked separately. The rotation angles change with V,
+but the circuit always contains just **three CX gates**, at steps 1, 4, and 6.
+
+Now apply this to routing. If a block has matrix U, appending a SWAP gives
+`U_total = SWAP * U`, another 4-by-4 unitary matrix. Decompose U_total and use
+the same three-CX construction with its new one-qubit gates and angles.
+**We replace the entire sequence with a circuit for its final action.** The
+construction works even if none of the original neighboring gates cancel.
+It assumes arbitrary one-qubit rotations are available; those rotations
+are essential and are excluded from the CX count.
+
+The restriction to one pair matters. `H(a)` in these examples stays within
+the pair a, b. A gate such as `CX(b,d)` would involve a third qubit d, so the
+whole sequence would no longer be a two-qubit block and this bound would not
+apply to it. Measurements also fall outside this unitary re-synthesis rule.
+
+Suppose the router is considering `SWAP(a, b)`. Look at the gates it has
+already placed most recently on those two physical wires. If they form an
+eligible run of gates confined to a and b, that run is the **existing block**
+that might be combined with the proposed SWAP.
+
+The router keeps a small number `c` for this run: its rough estimate of how
+many CX gates would implement the run **before adding the SWAP**. For a run
+containing only CX gates and one-qubit gates, it counts the CX gates and
+stores at most 3:
+
+| CX gates in the existing run | Stored estimate `c` |
+| --- | --- |
+| 1 | 1 |
+| 2 | 2 |
+| 3 | 3 |
+| 4 | 3 |
+| 10 | 3 |
+
+This is what **"capped at 3"** means: `c = min(3, count)`. The three-CX
+synthesis bound motivates the cap. The router still retains the original
+gates; storing `c = 3` does not itself rewrite them. Nor does it prove that
+the minimum is exactly 3: the router does not search for cancellations when
+computing this estimate. Other gate types receive the contributions listed
+below under "How the router keeps track".
+
+For an eligible block, `c` is therefore 1, 2, or 3. The router combines two
+observations:
+
+- **If `c = 1`:** the CX-and-SWAP cancellation above motivates an estimate of
+  2 CX gates for the combined block.
+- **If `c = 2` or `c = 3`:** the general two-qubit synthesis result gives an
+  upper bound of 3 CX gates for the combined block.
+
+These cases fit into one formula:
+
+```text
+Estimated total cost after fusion = min(3, c + 1)
+```
+
+The `c + 1` gives 2 when `c = 1`; the cap at 3 handles the other two cases.
+For example, when `c = 3`, keeping the block and SWAP separate would cost
+`3 + 3 = 6` CX gates, while rewriting them together needs at most 3. In this
+estimate, the SWAP adds no two-qubit gates to that block's cost.
+
+This is a routing estimate, not a guarantee of the final gate count. Qiskit's
+optimization passes can perform the re-synthesis after routing; the router
+only predicts the saving and uses it to help choose a SWAP.
 
 ### How the router keeps track
 
-Each two-qubit routing node carries a `block` value: an estimate of how many
-native two-qubit gates it contributes to a fusible block.
+A **routing node** is a record in the router's dependency graph. It represents
+one or more original circuit operations that the router handles together.
+For example, once q0 and q1 are on adjacent physical positions, this whole
+sequence can run without another routing decision:
 
-| Operation | `block` value |
+```text
+CX(q0, q1); H(q0); CX(q1, q0); Rz(0.2) on q1
+```
+
+The router groups these four operations into one two-qubit routing node R1
+for the pair (q0, q1). If the next operation is `CX(q1, q2)`, that needs a
+different pair to be adjacent and becomes another node R2:
+
+```text
+R1: four operations on q0, q1  --->  R2: CX(q1, q2)
+```
+
+The arrow means R2 must wait for R1. Grouping the operations does not turn
+them into a single hardware gate: when R1 is emitted, its original four
+operations are emitted in order. Section 18 explains this compression in
+more detail.
+
+**`block` is the name of a numeric field in that record.** `R1.block` stores
+R1's estimated contribution to the CX cost. The operations themselves are
+recorded separately. The router assigns contributions as follows:
+
+| Operation in the node | Contribution to `node.block` |
 | --- | --- |
 | CX, CY, CZ, ECR | 1 |
 | Any other two-qubit gate | 3 (worst case) |
 | One-qubit gate folded into the node | 0 |
 | Measurement, reset, barrier, delay, control flow, and other non-gate instructions | none: these end a block |
 
-Several gates compressed into one node (section 18) add up, capped at 3.
+For a node containing several gates, add their contributions and cap the
+sum at 3. If any operation ends a block, the node's field is `None` instead.
+In the example above:
+
+```text
+R1.block = min(3, 1 + 0 + 1 + 0) = 2
+                 CX  H   CX  Rz
+R2.block = 1
+```
+
+There are **two different quantities** to keep separate:
+
+| Quantity | What it describes | When it is computed |
+| --- | --- | --- |
+| `node.block` | The contribution of the original operations grouped into one routing node. | When the circuit is compressed, before routing. |
+| `c` | The accumulated estimate for the current run of emitted gates on one physical pair. | During routing, as nodes are emitted. |
+
+For example, suppose R1 is emitted with q0 at p2 and q1 at p3, and there is
+no earlier block to continue on that pair. Its `block` value of 2 starts a
+new accumulated estimate `c = 2` on p2, p3. A proposed `SWAP(p2, p3)` would
+then be scored using `c = 2`: separate cost `2 + 3 = 5`, estimated combined
+cost `min(3, 2 + 1) = 3`.
+
+If an emitted node continues an existing eligible block on the same physical
+pair, its contribution is added: `c = min(3, old c + node.block)`. If it starts
+a fresh block, `c` starts at `node.block`.
 
 During routing, every physical position remembers its **most recent block**:
 `last_block[p] = (partner, c)`, meaning "the last two-qubit work on p was with
@@ -1492,12 +1736,12 @@ A candidate SWAP on (a, b) gets a credit only if `last_block[a]` names b
 
 ```text
 without fusion:  c + 3          (the block, then a full SWAP)
-with fusion:     min(3, c + 1)
+with fusion:     min(3, c + 1)  (estimated total for the block and SWAP)
 saving         = (c + 3) − min(3, c + 1)
 credit         = −saving / 3    (in units of "one SWAP", the same units as distance)
 ```
 
-| Previous block cost c | Separate cost | Fused cost | Saving | Credit |
+| Previous block cost c | Separate cost | Estimated fused cost | Saving | Credit |
 | --- | --- | --- | --- | --- |
 | no eligible block | — | — | 0 | 0 |
 | 1 (one CX) | 4 | 2 | 2 | −2/3 |
