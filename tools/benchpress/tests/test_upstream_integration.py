@@ -85,16 +85,19 @@ def test_real_collection_and_circuits_at_both_levels(tmp_path):
     assert inventories[0] == inventories[1]
     assert len(inventories[0]) == 1054
     selected = select_panel(inventories[0], "quality", panel_size=50)
-    atomic_json(tmp_path / "panel.json", selected)
     env.update(BENCHPRESS_OPT_LEVEL="2", BENCHPRESS_CONFIG=str(tmp_path / "configs/opt-2.conf"))
-    subprocess.run(
-        [sys.executable, str(harness / "panel.py"), str(tmp_path / "panel.json")],
-        cwd=tmp_path,
-        env=env,
-        check=True,
-        timeout=180,
-    )
+    # Freeze twice in separate processes: target fingerprints must not depend on hash order.
+    for name in ("panel.json", "panel-repeat.json"):
+        atomic_json(tmp_path / name, selected)
+        subprocess.run(
+            [sys.executable, str(harness / "panel.py"), str(tmp_path / name)],
+            cwd=tmp_path,
+            env=env,
+            check=True,
+            timeout=180,
+        )
     selected = read_json(tmp_path / "panel.json")
+    assert selected == read_json(tmp_path / "panel-repeat.json")
     cases, tasks = expand(
         selected,
         {"profile": "quality", "opt_levels": [2, 3], "seeds": [0, 1, 2]},

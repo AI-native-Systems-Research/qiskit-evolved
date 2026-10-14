@@ -71,11 +71,20 @@ def apply_adapter(source, patch_path):
         'self.filename = os.environ.get("BENCHPRESS_CONFIG", DEFAULT_FILENAME)',
     )
     path = "benchpress/utilities/backends/flexible_backend.py"
-    changes[path] = "import os\n" + replace_once(
+    text = replace_once(
         (source / path).read_text(),
         "            control_flow=control_flow,\n        )",
         '            control_flow=control_flow,\n            seed=int(os.environ["BENCHPRESS_BACKEND_SEED"]),\n        )',
     )
+    # rustworkx's make_symmetric appends reverse edges in per-process hash order, and
+    # GenericBackendV2 draws seeded noise in edge order; symmetrize in sorted order instead.
+    text = replace_once(
+        text,
+        "        if cmap:\n            cmap.make_symmetric()\n",
+        "        if cmap:\n            edges = set(cmap.get_edges())\n"
+        "            cmap = CouplingMap(sorted(edges | {(b, a) for a, b in edges}))\n",
+    )
+    changes[path] = "import os\n" + text
     path = "benchpress/qiskit_gym/utils/io.py"
     text = (source / path).read_text()
     text = replace_once(
