@@ -1,10 +1,12 @@
 """Source pin validation and stage sequencing with a fake scheduler."""
 
+import json
 import subprocess
 
 import pytest
 from lsf import manager
-from lsf.submit import parser, validate
+from lsf.submit import main, parser, validate
+from prepare import archive
 from schemas import atomic_json, file_hash, state_dir, write_jsonl
 
 
@@ -15,16 +17,18 @@ def git(repo, *args):
 def committed_repo(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    git(repo, "init", "-q")
+    git(repo, "init", "-q", "-b", "harness")
     git(repo, "config", "user.email", "test@example.invalid")
     git(repo, "config", "user.name", "Harness tests")
     (repo / "source").write_text("baseline")
     git(repo, "add", ".")
     git(repo, "commit", "-qm", "baseline")
     baseline = git(repo, "rev-parse", "HEAD")
+    git(repo, "branch", "main", baseline)
     (repo / "source").write_text("candidate")
     git(repo, "commit", "-qam", "candidate")
     candidate = git(repo, "rev-parse", "HEAD")
+    git(repo, "branch", "sabre-gate-fusion-aware-scoring", candidate)
     harness = repo / "tools/benchpress/lsf"
     harness.mkdir(parents=True)
     (harness / "submit.py").write_text("# harness\n")
@@ -61,9 +65,120 @@ def test_algorithm_pins_do_not_follow_harness_parent(tmp_path):
     assert not args.results_root.exists()
 
 
+def test_default_branch_comparison_dry_run(tmp_path, capsys):
+    repo, baseline, _candidate = committed_repo(tmp_path)
+    root = tmp_path / "results"
+    main(["--repo", str(repo), "--results-root", str(root), "--dry-run"])
+    preview = json.loads(capsys.readouterr().out)
+    config = preview["configuration"]
+    assert config["baseline_ref"] == baseline
+    assert config["candidate_ref"] == git(repo, "rev-parse", "HEAD")
+    assert config["requested_refs"] == {
+        "baseline": "main",
+        "candidate": "HEAD",
+        "harness": "HEAD",
+    }
+    assert config["opt_levels"] == [2, 3]
+    assert preview["array_elements"] == 150
+    assert preview["invocations"] == 600
+    assert not root.exists()
+    assert not state_dir(root).exists()
+
+
+def test_diverged_branches_are_pinned_before_archiving(tmp_path):
+    repo, _baseline, candidate = committed_repo(tmp_path)
+    git(repo, "checkout", "-q", "main")
+    (repo / "source").write_text("advanced main")
+    git(repo, "commit", "-qam", "advance main independently of candidate")
+    baseline = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "harness")
+    args = parser().parse_args(
+        [
+            "--repo",
+            str(repo),
+            "--results-root",
+            str(tmp_path / "results"),
+            "--candidate-ref",
+            "sabre-gate-fusion-aware-scoring",
+        ]
+    )
+    config = validate(args)
+    assert config["baseline_ref"] == baseline
+    assert config["candidate_ref"] == candidate
+    assert config["requested_refs"]["candidate"] == "sabre-gate-fusion-aware-scoring"
+    # Moving either branch after validation must not change the archived algorithm sources.
+    git(repo, "branch", "-f", "main", "HEAD")
+    git(repo, "branch", "-f", "sabre-gate-fusion-aware-scoring", "HEAD")
+    for role, expected in (("baseline", "advanced main"), ("candidate", "candidate")):
+        destination = tmp_path / role
+        archive(repo, config[f"{role}_ref"], destination)
+        assert (destination / "source").read_text() == expected
+
+
+@pytest.mark.parametrize("ref_kind", ["remote", "tag", "short-sha"])
+def test_other_commit_refs_are_supported(tmp_path, ref_kind):
+    repo, _baseline, candidate = committed_repo(tmp_path)
+    if ref_kind == "remote":
+        ref = "origin/sabre-gate-fusion-aware-scoring"
+        git(repo, "update-ref", "refs/remotes/" + ref, candidate)
+    elif ref_kind == "tag":
+        ref = "candidate-tag"
+        git(repo, "tag", "-a", ref, candidate, "-m", "candidate tag")
+    else:
+        ref = candidate[:12]
+    args = parser().parse_args(
+        ["--repo", str(repo), "--results-root", str(tmp_path / "results"), "--candidate-ref", ref]
+    )
+    config = validate(args)
+    assert config["candidate_ref"] == candidate
+    assert config["requested_refs"]["candidate"] == ref
+
+
+@pytest.mark.parametrize("role", ["baseline", "candidate", "harness"])
+@pytest.mark.parametrize("ref", ["missing-branch", "HEAD^{tree}", "HEAD:source", "--all", ""])
+def test_invalid_commit_refs_fail_before_creating_session(tmp_path, role, ref):
+    repo, _baseline, _candidate = committed_repo(tmp_path)
+    root = tmp_path / "results"
+    args = parser().parse_args(
+        ["--repo", str(repo), "--results-root", str(root), f"--{role}-ref={ref}"]
+    )
+    with pytest.raises(ValueError, match=f"--{role}-ref .* does not resolve to a commit"):
+        validate(args)
+    assert not root.exists()
+    assert not state_dir(root).exists()
+
+
+@pytest.mark.parametrize("profile", ["quality", "followup-quality", "full"])
+def test_all_profiles_default_to_l2_and_l3(tmp_path, profile):
+    repo, _baseline, _candidate = committed_repo(tmp_path)
+    extra = []
+    if profile == "followup-quality":
+        panel_file = tmp_path / "panel.jsonl"
+        write_jsonl(panel_file, [{"node_id": "test.py::test_case", "selection_reason": "followup"}])
+        extra = ["--panel-file", str(panel_file)]
+    elif profile == "full":
+        extra = ["--campaign-limit-min", "180"]
+    args = parser().parse_args(
+        [
+            "--repo",
+            str(repo),
+            "--results-root",
+            str(tmp_path / "results"),
+            "--profile",
+            profile,
+            *extra,
+        ]
+    )
+    assert validate(args)["opt_levels"] == [2, 3]
+
+
 @pytest.mark.parametrize(
     "extra",
     [
+        ["--opt-levels", "0"],
+        ["--opt-levels", "1"],
+        ["--opt-levels", "1", "2", "3"],
+        ["--opt-levels", "4"],
         ["--opt-levels", "2", "2"],
         ["--seeds", "-1"],
         ["--seeds", "0", "0"],

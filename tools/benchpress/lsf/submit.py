@@ -6,6 +6,7 @@ import json
 import math
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -13,8 +14,6 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from prepare import archive
 from schemas import (
-    BASELINE,
-    CANDIDATE,
     atomic_json,
     atomic_text,
     command,
@@ -33,13 +32,23 @@ def parser():
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--repo", type=Path)
     result.add_argument("--harness-ref", default="HEAD")
-    result.add_argument("--baseline-ref", default=BASELINE)
-    result.add_argument("--candidate-ref", default=CANDIDATE)
+    result.add_argument(
+        "--baseline-ref",
+        default="main",
+        help="Baseline branch, tag, or commit, resolved once at submission (default: main)",
+    )
+    result.add_argument(
+        "--candidate-ref",
+        default="HEAD",
+        help="Candidate branch, tag, or commit, resolved once at submission (default: HEAD)",
+    )
     result.add_argument("--results-root", required=True, type=Path)
     result.add_argument(
         "--profile", choices=("quality", "followup-quality", "full"), default="quality"
     )
-    result.add_argument("--opt-levels", nargs="+", type=int)
+    result.add_argument(
+        "--opt-levels", nargs="+", type=int, help="Optimization levels: 2 and/or 3 (default: 2 3)"
+    )
     result.add_argument("--seeds", nargs="+", type=int)
     for arg in (
         "panel-size",
@@ -133,18 +142,20 @@ def validate(args):
         raise ValueError(
             "Quality uses the fixed 50-entry panel; explicit subsets require --panel-file"
         )
-    import re
-
-    for key in ("baseline_ref", "candidate_ref"):
-        if not re.fullmatch(r"[0-9a-f]{40}", config[key]):
-            raise ValueError("Algorithm pins must be full commit hashes")
-    for key in ("baseline_ref", "candidate_ref", "harness_ref"):
-        config[key] = command(["git", "-C", repo, "rev-parse", config[key] + "^{commit}"])
-    if (
-        command(["git", "-C", repo, "rev-parse", config["candidate_ref"] + "^"])
-        != config["baseline_ref"]
-    ):
-        raise ValueError("Baseline must be the candidate algorithm commit's parent")
+    # Retain the user's labels for provenance; builds and resume use only the resolved SHAs.
+    config["requested_refs"] = {
+        role: config[f"{role}_ref"] for role in ("baseline", "candidate", "harness")
+    }
+    for role, ref in config["requested_refs"].items():
+        try:
+            config[f"{role}_ref"] = command(
+                ["git", "-C", repo, "rev-parse", "--verify", "--end-of-options", ref + "^{commit}"]
+            )
+        except subprocess.CalledProcessError as exc:
+            raise ValueError(
+                f"--{role}-ref {ref!r} does not resolve to a commit in {repo}; "
+                "use a local branch, fetched remote-tracking branch, tag, or commit hash"
+            ) from exc
     harness_path = "tools/benchpress"
     tracked = command(
         ["git", "-C", repo, "ls-tree", "-r", "--name-only", config["harness_ref"], harness_path]

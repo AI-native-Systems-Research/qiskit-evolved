@@ -655,6 +655,7 @@ def compare(root):
             "run_id": config["run_id"],
             "baseline": config["baseline_ref"],
             "candidate": config["candidate_ref"],
+            "requested_refs": config.get("requested_refs", {}),
             "harness": config["harness_ref"],
             "levels": config["opt_levels"],
             "seeds": config["seeds"],
@@ -674,12 +675,19 @@ def compare(root):
             "retry_selection": config["retry_selection"],
         }
         atomic_json(results / "summary.json", summary)
+        requested_refs = config.get("requested_refs", {})
+        sources = "; ".join(
+            f"{role.capitalize()} "
+            + (f"`{requested_refs[role]}` at " if role in requested_refs else "")
+            + f"`{config[f'{role}_ref']}`"
+            for role in ("baseline", "candidate", "harness")
+        )
         lines = [
             "# Benchpress quality and runtime comparison",
             "",
             f"Profile `{config['profile']}`; optimization levels {config['opt_levels']}; seeds {config['seeds']}. One transpilation per invocation.",
             "",
-            f"Baseline `{config['baseline_ref']}`; candidate `{config['candidate_ref']}`; harness `{config['harness_ref']}`.",
+            sources + ".",
             "",
             f"Coverage: {summary['paired']}/{len(pairs)} paired seeds; {summary['complete_cases']}/{len(cases)} complete cases; {len(runs)} scheduled first-attempt invocations.",
             "",

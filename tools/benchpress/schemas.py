@@ -12,8 +12,6 @@ import subprocess
 import tempfile
 
 SCHEMA = 1
-BASELINE = "1298f960b7e814cfcb6aa9338b548ec5c6d2b355"
-CANDIDATE = "90ccaac29b2a547592e870797265007a128a02eb"
 BENCHPRESS = "b695f30e83a32bac05b9b4d8e98d37ba9aae5236"
 BENCHMARK = "e33f5934cb462e719b13b8d352ced107f575b4f7"
 REVISIONS = ("baseline", "candidate")

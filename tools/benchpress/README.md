@@ -4,7 +4,9 @@ This harness implements the [comparison plan](../../design/benchpress_comparison
 
 The timer measures wall-clock seconds around `pm.run(circuit)` using `perf_counter`, excluding circuit loading, pass-manager construction, pytest startup, and validation. All profiles, including `full`, take one sample per revision/level/seed without warmup or calibration. Fixed baseline-first ordering and host load can affect these observations; runtime reports describe the measured single-call differences.
 
-The baseline is `1298f960b7e814cfcb6aa9338b548ec5c6d2b355`; the candidate is `90ccaac29b2a547592e870797265007a128a02eb`. They remain independent of the harness commit. Continue on `sabre-choose-best-swap-heuristics-benchpress`.
+The baseline defaults to `main`; the candidate defaults to `HEAD` in `--repo`. Use `--candidate-ref` to compare another branch, such as `sabre-gate-fusion-aware-scoring`, and `--baseline-ref` to override the baseline. Both options accept local branches, fetched remote-tracking refs (for example, `origin/main`), tags, and commit hashes. The revisions can have independent histories; no parent relationship is required. The launcher resolves all refs to full commit hashes once at submission and archives those exact sources. Requested refs are retained in `launch.json`, the manifest, and reports; builds and resumes use the resolved commits even if a branch moves. The harness commit is selected independently with `--harness-ref`.
+
+All three profiles (`quality`, `followup-quality`, and `full`) run only **L2 and L3** by default. `--opt-levels 2` or `--opt-levels 3` narrows a run to one of them; L0 and L1 are rejected.
 
 ## Submit
 
@@ -24,6 +26,8 @@ BP_PY="$BP_CONTROL/bin/python"
 "$BP_PY" "$BP_REPO/tools/benchpress/lsf/submit.py" \
   --repo "$BP_REPO" \
   --harness-ref HEAD \
+  --baseline-ref main \
+  --candidate-ref sabre-gate-fusion-aware-scoring \
   --results-root "$BP_RESULTS" \
   --profile quality --opt-levels 2 3 --seeds 0 1 2 \
   --max-parallel 16 --queue normal --lsf-memory-unit GB \
@@ -36,12 +40,16 @@ BP_PY="$BP_CONTROL/bin/python"
 
 Replace the shared paths and queue for your site. Remove `--dry-run` from the same command to submit. Dry-run validates committed inputs and prints the effective matrix and initial `bsub` command, without creating a session or submitting jobs. Live cluster checks run on actual submission. Both the output directory and its `.lsf` sibling must be new.
 
+Refs must already exist in `--repo`; the launcher does not fetch or switch branches. Fetch first if you need updated remote tips, then pass `--baseline-ref origin/main --candidate-ref origin/sabre-gate-fusion-aware-scoring`. You can run the launcher from a separate committed harness branch. Omit `--candidate-ref` to benchmark the current checkout's committed `HEAD`.
+
 Use `--job-env-script /shared/path/modules.sh` for a Bash script that loads modules and sets dependency cache locations on compute nodes. The launcher snapshots and hashes that script. The controller Python must remain accessible at its original shared path.
 
 Run `submit.py --help` for all arguments. Resource, queue, timeout, and output arguments are described in the [argument table](../../design/benchpress_lsf_implementation_plan.md#5-submission-command-and-arguments). Additional implementation options:
 
 | Argument | Purpose |
 | --- | --- |
+| `--baseline-ref REF` | Baseline branch, tag, or commit; defaults to `main`, resolved once at submission. |
+| `--candidate-ref REF` | Candidate branch, tag, or commit; defaults to `HEAD`, resolved once at submission. |
 | `--benchpress-source PATH` | Local Git mirror containing the pinned Benchpress commit; archive before submission instead of fetching on the build node. |
 | `--benchmark-source PATH` | Local Git mirror containing the pinned pytest-benchmark fork; archive before submission. |
 | `--build-cache-root PATH` | Optional shared cache of release wheels, locked and keyed by source, platform/ABI, toolchain, build lock, Cargo lock, and adapter hash. Cache hits verify wheel hashes. Environments are always created at their final session paths. |
@@ -107,4 +115,4 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /tmp/benchpress-tests/bin/python -m pytest \
   tools/benchpress/tests -q -o addopts= --confcutdir=tools/benchpress/tests
 ```
 
-The opt-in upstream integration test additionally needs installed `qiskit` and `qiskit-ibm-runtime`. Set `BENCHPRESS_TEST_SOURCE` to a local Git checkout containing the pinned Benchpress SHA and run `tests/test_upstream_integration.py`. It archives a fresh upstream tree, verifies the 1,054-entry inventory and 50-entry panel at both levels, executes the two adapter checks at both levels, and checks small-circuit semantics. This verifies adapter compatibility; only the Linux campaign builds and compares the pinned algorithm revisions.
+The opt-in upstream integration test additionally needs installed `qiskit` and `qiskit-ibm-runtime`. Set `BENCHPRESS_TEST_SOURCE` to a local Git checkout containing the pinned Benchpress SHA and run `tests/test_upstream_integration.py`. It archives a fresh upstream tree, verifies the 1,054-entry inventory and 50-entry panel at both levels, executes the two adapter checks at both levels, and checks small-circuit semantics. This verifies adapter compatibility; only the Linux campaign builds and compares the selected Qiskit revisions.

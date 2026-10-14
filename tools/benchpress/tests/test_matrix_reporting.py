@@ -7,8 +7,6 @@ import pytest
 from compare import case_rows, compare, level_rows, paired_rows, read_run, summarize
 from panel import expand
 from schemas import (
-    BASELINE,
-    CANDIDATE,
     atomic_json,
     file_hash,
     invocation_identity,
@@ -25,8 +23,8 @@ def config():
         "profile": "quality",
         "opt_levels": [2, 3],
         "seeds": [0, 1, 2],
-        "baseline_ref": BASELINE,
-        "candidate_ref": CANDIDATE,
+        "baseline_ref": "b" * 40,
+        "candidate_ref": "c" * 40,
         "harness_ref": "a" * 40,
         "backend_seed": 424242,
         "adapter_hash": "adapter",
@@ -119,9 +117,18 @@ def write_pass(root, cfg, task, level, revision, attempt=1, gates=10, depth=4, r
     )
 
 
-def test_reports_account_for_missing_zero_and_retry_without_mixing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("with_requested_refs", [False, True])
+def test_reports_account_for_missing_zero_and_retry_without_mixing(
+    tmp_path, monkeypatch, with_requested_refs
+):
     root = tmp_path / "run"
     cfg = config()
+    if with_requested_refs:
+        cfg["requested_refs"] = {
+            "baseline": "main",
+            "candidate": "sabre-gate-fusion-aware-scoring",
+            "harness": "HEAD",
+        }
     _cases, tasks = expand(panel(2), cfg, {"2": "config2", "3": "config3"})
     atomic_json(root / "results/manifest.json", cfg)
     atomic_json(
@@ -149,6 +156,12 @@ def test_reports_account_for_missing_zero_and_retry_without_mixing(tmp_path, mon
             write_pass(root, cfg, tasks[0], level, revision, attempt=2)
     monkeypatch.setenv("MPLCONFIGDIR", str(tmp_path / "matplotlib"))
     summary = compare(root)
+    assert summary["requested_refs"] == cfg.get("requested_refs", {})
+    report = (root / "results/report.md").read_text()
+    for role in ("baseline", "candidate", "harness"):
+        assert cfg[f"{role}_ref"] in report
+        if with_requested_refs:
+            assert f"`{cfg['requested_refs'][role]}` at `{cfg[f'{role}_ref']}`" in report
     assert summary["invocations"] == 24
     assert summary["pairs"] == 12
     assert summary["paired"] == 11
