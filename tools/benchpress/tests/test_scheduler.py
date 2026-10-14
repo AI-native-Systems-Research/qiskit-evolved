@@ -174,5 +174,26 @@ def test_cluster_units_and_multislot_reservation(tmp_path):
         (0, "LSF_UNIT_FOR_LIMITS=GB", ""),
         (0, "MAX_JOB_ARRAY_SIZE=1000\nRESOURCE_RESERVE_PER_TASK=Y", ""),
     ]
-    config = Scheduler(tmp_path, commands).cluster_config("GB")
+    config = Scheduler(tmp_path, commands).cluster_config("GB", envdir=tmp_path)
     assert config == {"memory_unit": "GB", "max_array_size": 1000, "reserve_per_task": True}
+    assert commands.calls[0] == ["lsadmin", "showconf", "lim"]
+
+
+def test_cluster_units_from_lsf_conf_without_lsadmin(tmp_path):
+    (tmp_path / "lsf.conf").write_text(
+        "#   Change LSF_UNIT_FOR_LIMITS=MB to LSF_UNIT_FOR_LIMITS=GB\n"
+        "#LSF_UNIT_FOR_LIMITS=MB\n"
+        "LSF_UNIT_FOR_LIMITS=GB\n"
+    )
+    commands = FakeCommands()
+    commands.responses = [(0, "    MAX_JOB_ARRAY_SIZE = 1000", "")]
+    config = Scheduler(tmp_path, commands).cluster_config("GB", envdir=tmp_path)
+    assert config["memory_unit"] == "GB"
+    assert commands.calls == [["bparams", "-l"]]
+
+
+def test_cluster_units_unreadable_without_lsadmin(tmp_path):
+    commands = FakeCommands()
+    commands.responses = [(255, "", "You cannot run lsadmin on client host <login>")]
+    with pytest.raises(ValueError, match="memory units"):
+        Scheduler(tmp_path, commands).memory_unit(envdir=tmp_path)

@@ -8,7 +8,7 @@ The baseline is `1298f960b7e814cfcb6aa9338b548ec5c6d2b355`; the candidate is `90
 
 Commit the implementation files on the existing branch before submitting: the launcher archives a committed harness and refuses changed/untracked files under `tools/benchpress/`. Unrelated checkout changes are allowed. The commands below run on the cluster's Linux login node, after making that commit available there. Use shared paths visible to every compute host.
 
-Required software: Python **3.12**, `git`, a C compiler, Rust **1.89.0** through `rustup`, and LSF clients `bsub`, `bjobs`, `bhist`, `bkill`, `lsadmin`, and `bparams`. The launcher inspects LSF memory units and array limits; workers validate exclusive-core affinity and platform compatibility. `rusage` is a reservation, not an OS memory limit.
+Required software: Python **3.12**, `git`, a C compiler, Rust **1.89.0** through `rustup`, and LSF clients `bsub`, `bjobs`, `bhist`, `bkill`, and `bparams`. The launcher reads LSF memory units from `$LSF_ENVDIR/lsf.conf` (falling back to `lsadmin showconf lim`, which login nodes usually refuse) and array limits from `bparams -l`; workers validate exclusive-core affinity and platform compatibility. `rusage` is a reservation, not an OS memory limit.
 
 ```bash
 BP_REPO=/shared/PROJECT/USER/qiskit-evolved

@@ -300,7 +300,7 @@ def main(argv=None):
         return
     if sys.platform != "linux" or sys.version_info[:2] != (3, 12):
         raise ValueError("Submit on the Linux cluster with Python 3.12")
-    for name in ("bsub", "bjobs", "bhist", "bkill", "lsadmin", "bparams", "git"):
+    for name in ("bsub", "bjobs", "bhist", "bkill", "bparams", "git"):
         if not shutil.which(name):
             raise ValueError(f"Missing cluster command {name}")
     with tempfile.TemporaryDirectory(prefix="bp-preflight-") as temp:

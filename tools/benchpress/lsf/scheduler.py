@@ -2,6 +2,7 @@
 
 import getpass
 import json
+import os
 import re
 import subprocess
 import uuid
@@ -24,6 +25,12 @@ def wall_seconds(value):
     if not match:
         raise ValueError(f"Invalid LSF wall time {value!r}; use H:MM")
     return 60 * int(match[1]) if match[2] is None else 3600 * int(match[1]) + 60 * int(match[2])
+
+
+def unit_for_limits(text):
+    """Last uncommented LSF_UNIT_FOR_LIMITS assignment, as LSF reads it."""
+    found = re.findall(r"^[ \t]*LSF_UNIT_FOR_LIMITS[ \t]*=[ \t]*(\w+)", text, re.M)
+    return found[-1].upper() if found else None
 
 
 def resources(slots, mem_gb, unit="GB", exclusive=False, per_task=False):
@@ -229,15 +236,26 @@ class Scheduler:
                 self.execute(["bkill", row["job_id"]])
         return self.reconcile(intent)  # Caller must wait until every row is terminal.
 
-    def cluster_config(self, requested_unit):
-        lim = self.execute(["lsadmin", "showconf", "lim"])
+    def memory_unit(self, envdir=None):
+        # lsadmin is refused on client hosts, so prefer the shared lsf.conf.
+        conf = Path(envdir or os.environ.get("LSF_ENVDIR") or "/etc") / "lsf.conf"
+        try:
+            text = conf.read_text()
+        except OSError:
+            lim = self.execute(["lsadmin", "showconf", "lim"])
+            if lim["returncode"]:
+                raise ValueError(
+                    f"Cannot inspect LSF memory units: {conf} is unreadable and "
+                    "lsadmin showconf lim failed"
+                ) from None
+            text = lim["stdout"]
+        return unit_for_limits(text) or "MB"
+
+    def cluster_config(self, requested_unit, envdir=None):
+        actual_unit = self.memory_unit(envdir)
         params = self.execute(["bparams", "-l"])
-        if lim["returncode"] or params["returncode"]:
-            raise ValueError(
-                "Cannot inspect LSF units/array limits with lsadmin showconf lim and bparams -l"
-            )
-        unit = re.search(r"LSF_UNIT_FOR_LIMITS\s*=\s*(\w+)", lim["stdout"])
-        actual_unit = unit[1].upper() if unit else "MB"
+        if params["returncode"]:
+            raise ValueError("Cannot inspect LSF array limits with bparams -l")
         if actual_unit != requested_unit:
             raise ValueError(f"LSF memory units are {actual_unit}, requested {requested_unit}")
         array = re.search(r"MAX_JOB_ARRAY_SIZE\s*=\s*(\d+)", params["stdout"])
