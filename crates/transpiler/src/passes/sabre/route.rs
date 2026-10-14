@@ -592,7 +592,7 @@ struct State {
     /// release valve can unwind them.
     block_undo: Vec<(PhysicalQubit, Option<(PhysicalQubit, u8)>)>,
     /// For each physical qubit, the other qubit of the 2q block routed on it most recently (with no
-    /// swap on it since), and that block's estimated native 2q gate count (at most 3).
+    /// swap on it since), and that block's estimated CX-like gate count (at most 3).
     last_block: VecMap<PhysicalQubit, Option<(PhysicalQubit, u8)>>,
     rng: Pcg64Mcg,
     seed: u64,
@@ -706,9 +706,23 @@ impl State {
         self.block_undo.push((b, self.last_block[b].take()));
     }
 
+    /// Abandon the current search, restoring both the layout/layers and the fusion state.
+    fn undo_swaps(&mut self, current_swaps: &mut Vec<[PhysicalQubit; 2]>) {
+        current_swaps
+            .drain(..)
+            .rev()
+            .for_each(|swap| self.apply_swap(swap));
+        while let Some((q, block)) = self.block_undo.pop() {
+            self.last_block[q] = block;
+        }
+    }
+
     /// Update the open 2q blocks for every node routed into `order` from
     /// index `start` on, all of which were routed at the current layout.
     fn advance_routed(&mut self, problem: RoutingProblem, order: &Order, start: usize) {
+        if problem.heuristic.fusion_weight == 0.0 {
+            return;
+        }
         for item in &order.order[start..] {
             let node = &problem.sabre.dag[item.node];
             match &node.kind {
@@ -722,7 +736,10 @@ impl State {
                     self.last_block[a] = (c > 0).then_some((b, c));
                     self.last_block[b] = (c > 0).then_some((a, c));
                 }
-                // Other nodes end the 2q blocks on their qubits.
+                // Interaction-only layout graphs discard original indices. Conservatively
+                // close all blocks at a synchronization or control-flow boundary in that case.
+                _ if node.indices.is_empty() => self.last_block.fill(None),
+                // Full routing retains the indices, so only the affected qubits need clearing.
                 _ => {
                     for index in &node.indices {
                         if let NodeType::Operation(inst) = &problem.dag[*index] {
@@ -946,10 +963,10 @@ impl State {
         // heuristic), and if it involves two active qubits, we choose the `swap[0] < swap[1]` form
         // to make a canonical choice.
         //
-        // A swap directly after the 2q block on the same pair is fused into it by 2q-block
-        // resynthesis: a block of `c` native gates grows to `min(3, c + 1)` rather than `c + 3`
-        // (e.g. CX then SWAP is two CX, not four).  Such a swap starts with a negative credit for
-        // the native gates it saves, in units of one swap's three (the basic heuristic's units).
+        // With fusion enabled, estimate the marginal CX cost of a swap after a block as
+        // `min(3, c + 1) - c`, instead of 3. This is a heuristic, not an identity for the block's
+        // unitary (cancellation and special parameters can change the actual savings). Convert
+        // the saving to distance units and weight it relative to the effective basic component.
         self.swap_scores.clear();
         for phys in self.layers.front().iter_active(&self.layout) {
             let start = self.swap_scores.len();
@@ -958,13 +975,15 @@ impl State {
                     self.swap_scores.push(([phys, neighbor], 0.0));
                 }
             }
-            if let Some((partner, c)) = self.last_block[phys]
+            if problem.heuristic.fusion_weight > 0.0
+                && let Some((partner, c)) = self.last_block[phys]
                 && self.last_block[partner].is_some_and(|(q, _)| q == phys)
                 && let Some((_, credit)) = self.swap_scores[start..]
                     .iter_mut()
                     .find(|(swap, _)| swap[1] == partner)
             {
-                *credit = f64::from(3 - ((c + 1).min(3) - c)) / -3.0;
+                *credit =
+                    problem.heuristic.fusion_weight * f64::from(3 - ((c + 1).min(3) - c)) / -3.0;
             }
         }
 
@@ -1167,13 +1186,7 @@ pub fn swap_map_trial<'a>(
             // If we exceeded the max number of heuristic-chosen swaps without making progress,
             // unwind to the last progress point and greedily swap to bring a node together.
             // Efficiency doesn't matter much; this path never gets taken unless we're unlucky.
-            current_swaps
-                .drain(..)
-                .rev()
-                .for_each(|swap| state.apply_swap(swap));
-            while let Some((q, block)) = state.block_undo.pop() {
-                state.last_block[q] = block;
-            }
+            state.undo_swaps(&mut current_swaps);
             let force_routed = state.force_enable_closest_node(problem, &mut current_swaps);
             routable_nodes.extend(force_routed);
         }
@@ -1189,5 +1202,136 @@ pub fn swap_map_trial<'a>(
         order,
         initial_layout: initial_layout.clone(),
         final_layout: state.layout,
+    }
+}
+
+#[cfg(test)]
+mod fusion_tests {
+    use super::super::dag::SabreNode;
+    use super::super::heuristic::SetScaling;
+    use super::*;
+    use rustworkx_core::petgraph::graph::{DiGraph, UnGraph};
+
+    fn target() -> RoutingTarget {
+        let mut graph = UnGraph::<(), ()>::new_undirected();
+        let nodes: Vec<_> = (0..4).map(|_| graph.add_node(())).collect();
+        for pair in nodes.windows(2) {
+            graph.add_edge(pair[0], pair[1], ());
+        }
+        RoutingTarget::from_neighbors(Neighbors::from_coupling(&graph))
+    }
+
+    fn node(kind: InteractionKind, block: Option<u8>) -> SabreNode {
+        SabreNode {
+            indices: vec![],
+            kind,
+            block,
+        }
+    }
+
+    fn pair(qubits: [u32; 2]) -> SabreNode {
+        node(
+            InteractionKind::TwoQ(qubits.map(VirtualQubit::new)),
+            Some(1),
+        )
+    }
+
+    #[test]
+    fn interaction_only_boundaries_in_both_directions() {
+        for control_flow in [false, true] {
+            let mut graph = DiGraph::new();
+            let before = [graph.add_node(pair([0, 1])), graph.add_node(pair([2, 3]))];
+            let boundary = graph.add_node(node(
+                if control_flow {
+                    InteractionKind::ControlFlow(vec![].into_boxed_slice())
+                } else {
+                    InteractionKind::Synchronize
+                },
+                None,
+            ));
+            let after = [graph.add_node(pair([0, 1])), graph.add_node(pair([2, 3]))];
+            for index in before {
+                graph.add_edge(index, boundary, ());
+            }
+            for index in after {
+                graph.add_edge(boundary, index, ());
+            }
+            let forwards = SabreDAG {
+                initial: vec![],
+                dag: graph,
+                first_layer: before.into(),
+            }
+            .only_interactions();
+            let backwards = forwards.reverse_dag();
+            let target = target();
+            let dag = DAGCircuit::new();
+            let heuristic = Heuristic::new(None, None, None, Some(0), 1e-10)
+                .with_basic(1.0, SetScaling::Constant)
+                .with_fusion(0.25)
+                .unwrap();
+            for sabre in [&forwards, &backwards] {
+                let problem = RoutingProblem {
+                    target: &target,
+                    sabre,
+                    dag: &dag,
+                    heuristic: &heuristic,
+                };
+                let (state, _) = State::begin(problem, NLayout::generate_trivial_layout(4), 0);
+                for (q, partner) in [(0, 1), (1, 0), (2, 3), (3, 2)] {
+                    // Without clearing the boundary, both CX counts would accumulate to two.
+                    assert_eq!(
+                        state.last_block[PhysicalQubit(q)],
+                        Some((PhysicalQubit(partner), 1))
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn abandoned_search_restores_fusion_state_and_scores() {
+        let mut graph = DiGraph::new();
+        let first = graph.add_node(pair([0, 1]));
+        let blocked = graph.add_node(pair([0, 3]));
+        graph.add_edge(first, blocked, ());
+        let sabre = SabreDAG {
+            initial: vec![],
+            dag: graph,
+            first_layer: vec![first],
+        };
+        let target = target();
+        let dag = DAGCircuit::new();
+        let heuristic = Heuristic::new(None, None, None, Some(0), 1e-10)
+            .with_basic(1.0, SetScaling::Constant)
+            .with_fusion(0.25)
+            .unwrap();
+        let problem = RoutingProblem {
+            target: &target,
+            sabre: &sabre,
+            dag: &dag,
+            heuristic: &heuristic,
+        };
+        let (mut state, _) = State::begin(problem, NLayout::generate_trivial_layout(4), 0);
+        let old_layout = state.layout.clone();
+        let old_blocks = state.last_block.clone();
+        state.choose_best_swap(problem);
+        let old_scores = state.swap_scores.clone();
+        let mut abandoned = vec![
+            [PhysicalQubit(0), PhysicalQubit(1)],
+            [PhysicalQubit(1), PhysicalQubit(2)],
+        ];
+        for &swap in &abandoned {
+            state.apply_swap(swap);
+            state.advance_swap(swap);
+        }
+        state.undo_swaps(&mut abandoned);
+        assert!(abandoned.is_empty());
+        assert!(state.block_undo.is_empty());
+        assert_eq!(state.layout, old_layout);
+        for q in (0..4).map(PhysicalQubit) {
+            assert_eq!(state.last_block[q], old_blocks[q]);
+        }
+        state.choose_best_swap(problem);
+        assert_eq!(state.swap_scores, old_scores);
     }
 }

@@ -31,7 +31,7 @@ class TranspileLayoutTest(QiskitTestCase):
         cmap = CouplingMap.from_line(3, bidirectional=False)
         tqc = transpile(qc, coupling_map=cmap, initial_layout=[2, 1, 0], seed_transpiler=42)
         res = tqc.layout.final_index_layout()
-        self.assertEqual(res, [1, 2, 0])
+        self.assertEqual(res, [2, 0, 1])
 
     def test_final_virtual_layout_full_path(self):
         qc = QuantumCircuit(3)
@@ -41,7 +41,7 @@ class TranspileLayoutTest(QiskitTestCase):
         cmap = CouplingMap.from_line(3, bidirectional=False)
         tqc = transpile(qc, coupling_map=cmap, initial_layout=[2, 1, 0], seed_transpiler=42)
         res = tqc.layout.final_virtual_layout()
-        self.assertEqual(res, Layout({qc.qubits[0]: 1, qc.qubits[1]: 2, qc.qubits[2]: 0}))
+        self.assertEqual(res, Layout({qc.qubits[0]: 2, qc.qubits[1]: 0, qc.qubits[2]: 1}))
 
     def test_final_index_layout_full_path_with_ancilla(self):
         qc = QuantumCircuit(3)

@@ -68,6 +68,9 @@ from qiskit.circuit.equivalence_library import SessionEquivalenceLibrary as sel
 from qiskit.quantum_info.operators.symplectic.clifford_circuits import get_clifford_gate_names
 from qiskit.utils import default_num_processes
 from qiskit import user_config
+from qiskit.circuit.library import CXGate, CZGate, ECRGate
+from qiskit.transpiler.passes.routing.sabre_swap import Heuristic, SetScaling
+from qiskit.synthesis.one_qubit.one_qubit_decompose import ONE_QUBIT_EULER_BASIS_GATES
 
 CONFIG = user_config.get_config()
 
@@ -80,6 +83,48 @@ _discrete_skipped_ops = {
     "for_loop",
     "while_loop",
 }
+
+
+def _sabre_fusion_weight(config, optimization_level):
+    """Enable the approximate CX credit only with compatible level-2/3 resynthesis."""
+    target = config.target
+    if (
+        optimization_level not in (2, 3)
+        or config.optimization_method not in (None, "default")
+        or config.unitary_synthesis_method != "default"
+        or config.routing_method not in (None, "default", "sabre")
+        or target is None
+        or target.num_qubits is None
+        or common.is_clifford_t_basis(config.basis_gates, target)
+    ):
+        return 0.0
+    two_qubit_gates = [op for op in target.operations if getattr(op, "num_qubits", None) == 2]
+    if not two_qubit_gates or any(
+        not isinstance(op, (CXGate, CZGate, ECRGate)) for op in two_qubit_gates
+    ):
+        return 0.0
+    for qubit in range(target.num_qubits):
+        try:
+            names = target.operation_names_for_qargs((qubit,))
+        except KeyError:
+            return 0.0
+        if not any(set(gates).issubset(names) for gates in ONE_QUBIT_EULER_BASIS_GATES.values()):
+            return 0.0
+    return 0.25
+
+
+def _sabre_routing_heuristic(config, optimization_level):
+    """Use SabreSwap's existing internal heuristic interface for preset fusion."""
+    if not (weight := _sabre_fusion_weight(config, optimization_level)):
+        return "decay"
+    num_qubits = config.target.num_qubits
+    return (
+        Heuristic(attempt_limit=10 * num_qubits)
+        .with_basic(1.0, SetScaling.Constant)
+        .with_lookahead([0.5 / num_qubits], SetScaling.Constant)
+        .with_decay(0.001, 5)
+        .with_fusion(weight)
+    )
 
 
 class DefaultInitPassManager(PassManagerStagePlugin):
@@ -425,7 +470,7 @@ class SabreSwapPassManager(PassManagerStagePlugin):
 
             routing_pass = SabreSwap(
                 coupling_map_routing,
-                heuristic="decay",
+                heuristic=_sabre_routing_heuristic(pass_manager_config, optimization_level),
                 seed=seed_transpiler,
                 trials=trial_count,
             )
@@ -442,7 +487,7 @@ class SabreSwapPassManager(PassManagerStagePlugin):
             trial_count = _get_trial_count(20)
             routing_pass = SabreSwap(
                 coupling_map_routing,
-                heuristic="decay",
+                heuristic=_sabre_routing_heuristic(pass_manager_config, optimization_level),
                 seed=seed_transpiler,
                 trials=trial_count,
             )
@@ -796,6 +841,7 @@ class DefaultLayoutPassManager(PassManagerStagePlugin):
 
             choose_layout_1 = SabreLayout(
                 coupling_map,
+                _fusion_weight=_sabre_fusion_weight(pass_manager_config, optimization_level),
                 max_iterations=2,
                 seed=pass_manager_config.seed_transpiler,
                 swap_trials=trial_count,
@@ -828,6 +874,7 @@ class DefaultLayoutPassManager(PassManagerStagePlugin):
 
             choose_layout_1 = SabreLayout(
                 coupling_map,
+                _fusion_weight=_sabre_fusion_weight(pass_manager_config, optimization_level),
                 max_iterations=4,
                 seed=pass_manager_config.seed_transpiler,
                 swap_trials=trial_count,
@@ -957,6 +1004,7 @@ class SabreLayoutPassManager(PassManagerStagePlugin):
 
             layout_pass = SabreLayout(
                 coupling_map,
+                _fusion_weight=_sabre_fusion_weight(pass_manager_config, optimization_level),
                 max_iterations=2,
                 seed=pass_manager_config.seed_transpiler,
                 swap_trials=trial_count,
@@ -968,6 +1016,7 @@ class SabreLayoutPassManager(PassManagerStagePlugin):
 
             layout_pass = SabreLayout(
                 coupling_map,
+                _fusion_weight=_sabre_fusion_weight(pass_manager_config, optimization_level),
                 max_iterations=4,
                 seed=pass_manager_config.seed_transpiler,
                 swap_trials=trial_count,

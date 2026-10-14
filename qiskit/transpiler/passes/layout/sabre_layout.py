@@ -109,6 +109,8 @@ class SabreLayout(TransformationPass):
         swap_trials=None,
         layout_trials=None,
         skip_routing=False,
+        *,
+        _fusion_weight=0.0,
     ):
         """SabreLayout initializer.
 
@@ -180,6 +182,8 @@ class SabreLayout(TransformationPass):
         self.swap_trials = default_num_processes() if swap_trials is None else swap_trials
         self.layout_trials = default_num_processes() if layout_trials is None else layout_trials
         self.skip_routing = skip_routing
+        # Internal preset policy, like the unstable Heuristic configuration in SabreSwap.
+        self._fusion_weight = _fusion_weight
 
     @property
     def coupling_map(self):
@@ -270,6 +274,7 @@ class SabreLayout(TransformationPass):
             .with_basic(1.0, SetScaling.Constant)
             .with_lookahead([0.5 / self.target.num_qubits], SetScaling.Constant)
             .with_decay(0.001, 5)
+            .with_fusion(self._fusion_weight)
         )
         sabre_start = time.perf_counter()
         # If `skip_routing`, then `out_dag` and `final` are meaningless but well-typed.

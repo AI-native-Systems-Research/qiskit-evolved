@@ -1,0 +1,25 @@
+features_transpiler:
+  - |
+    SABRE gate-fusion scoring is enabled by default at optimization levels 2 and 3
+    in compatible Python preset pass managers used by :func:`.transpile` and
+    :func:`.generate_preset_pass_manager`. Built-in SABRE layout and routing favor
+    SWAPs that subsequent two-qubit block synthesis can combine with preceding
+    gates, using an approximate CX-like cost model. Automatic enablement requires the default
+    optimization and unitary-synthesis stages, built-in SABRE routing, and targets
+    whose two-qubit gates are limited to CX, CZ, or ECR, with a universal
+    single-qubit synthesis basis. Clifford+T pipelines, targets with additional
+    native two-qubit gates such as RZZ, and coupling-map-only configurations
+    without a target basis are excluded.
+
+    Standalone SABRE passes, optimization levels 0 and 1, and the Rust-native and
+    C API transpilers retain their previous scoring by default. No public
+    configuration parameter is added. The heuristic can select more SWAPs in
+    pursuit of a lower synthesized gate count. Actual savings depend on the
+    circuit, and trial selection continues to minimize inserted SWAP count.
+upgrade_transpiler:
+  - |
+    At optimization levels 2 and 3, :func:`.transpile` and Python preset pass
+    managers with SABRE gate-fusion scoring enabled may produce
+    different layouts and routed circuits than previous releases, even with the
+    same ``seed_transpiler``. Tests that assert an exact layout or circuit may
+    need their expected results updated.

@@ -192,6 +192,29 @@ pub struct Heuristic {
     pub decay: Option<DecayHeuristic>,
     pub best_epsilon: f64,
     pub attempt_limit: usize,
+    /// Multiplier of the approximate CX-fusion saving, relative to the effective basic weight
+    /// (or 1 if no basic component is present), before applying decay. Zero disables fusion.
+    #[pyo3(get)]
+    pub fusion_weight: f64,
+}
+
+impl Heuristic {
+    pub fn new(
+        basic: Option<BasicHeuristic>,
+        lookahead: Option<LookaheadHeuristic>,
+        decay: Option<DecayHeuristic>,
+        attempt_limit: Option<usize>,
+        best_epsilon: f64,
+    ) -> Self {
+        Self {
+            basic,
+            lookahead,
+            decay,
+            best_epsilon,
+            attempt_limit: attempt_limit.unwrap_or(usize::MAX),
+            fusion_weight: 0.0,
+        }
+    }
 }
 
 #[pymethods]
@@ -209,22 +232,19 @@ impl Heuristic {
     ///         disabled entirely, Sabre will enter an infinite loop.
     ///     best_epsilon (float): the floating-point epsilon to use when comparing scores to find
     ///         the best value.
+    ///     fusion_weight (float): nonnegative finite weight of the approximate CX-fusion credit.
+    ///         Zero (the default) disables it. See :meth:`with_fusion` for the cost assumptions.
     #[new]
-    #[pyo3(signature = (basic=None, lookahead=None, decay=None, attempt_limit=1000, best_epsilon=1e-10))]
-    pub fn new(
+    #[pyo3(signature = (basic=None, lookahead=None, decay=None, attempt_limit=1000, best_epsilon=1e-10, fusion_weight=0.0))]
+    pub fn py_new(
         basic: Option<BasicHeuristic>,
         lookahead: Option<LookaheadHeuristic>,
         decay: Option<DecayHeuristic>,
         attempt_limit: Option<usize>,
         best_epsilon: f64,
-    ) -> Self {
-        Self {
-            basic,
-            lookahead,
-            decay,
-            best_epsilon,
-            attempt_limit: attempt_limit.unwrap_or(usize::MAX),
-        }
+        fusion_weight: f64,
+    ) -> PyResult<Self> {
+        Self::new(basic, lookahead, decay, attempt_limit, best_epsilon).with_fusion(fusion_weight)
     }
 
     pub fn __getnewargs__(&self, py: Python) -> PyResult<Py<PyAny>> {
@@ -234,6 +254,7 @@ impl Heuristic {
             self.decay,
             self.attempt_limit,
             self.best_epsilon,
+            self.fusion_weight,
         )
             .into_py_any(py)
     }
@@ -270,8 +291,26 @@ impl Heuristic {
         }
     }
 
+    /// Set the approximate fusion credit. Zero disables it. Positive weights assume subsequent
+    /// two-qubit block resynthesis in a CX-like basis with arbitrary one-qubit gates. The model
+    /// estimates savings of two or three CXs per eligible swap; it does not track block unitaries
+    /// or guarantee these savings. The credit is scaled by the effective basic weight (including
+    /// its set scaling), or by 1 if basic is absent, and is included before the decay multiplier.
+    /// Trial selection continues to minimize the number of inserted swaps.
+    pub fn with_fusion(&self, weight: f64) -> PyResult<Self> {
+        if !weight.is_finite() || weight < 0.0 {
+            return Err(PyValueError::new_err(
+                "fusion_weight must be finite and nonnegative",
+            ));
+        }
+        Ok(Self {
+            fusion_weight: weight,
+            ..self.clone()
+        })
+    }
+
     pub fn __repr__(&self, py: Python) -> PyResult<Py<PyAny>> {
-        let fmt = "Heuristic(basic={!r}, lookahead={!r}, decay={!r}, attempt_limit={!r}, best_epsilon={!r})";
+        let fmt = "Heuristic(basic={!r}, lookahead={!r}, decay={!r}, attempt_limit={!r}, best_epsilon={!r}, fusion_weight={!r})";
         PyString::new(py, fmt)
             .call_method1(
                 "format",
@@ -281,6 +320,7 @@ impl Heuristic {
                     self.decay,
                     self.attempt_limit,
                     self.best_epsilon,
+                    self.fusion_weight,
                 ),
             )?
             .into_py_any(py)

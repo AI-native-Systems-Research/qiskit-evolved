@@ -17,8 +17,10 @@ use thiserror::Error;
 
 use qiskit_circuit::dag_circuit::{DAGCircuit, NodeType, Wire};
 use qiskit_circuit::operations::Operation;
-use qiskit_circuit::operations::{ControlFlowView, OperationRef, StandardGate};
-use qiskit_circuit::packed_instruction::PackedOperation;
+use qiskit_circuit::operations::{
+    ControlFlowView, OperationRef, PyInstruction, PyOpKind, StandardGate,
+};
+use qiskit_circuit::packed_instruction::{PackedInstruction, PackedOperation};
 use qiskit_circuit::{Qubit, VirtualQubit};
 
 /// The type of a node in the Sabre interactions graph.
@@ -75,7 +77,7 @@ pub struct SabreNode {
     /// node as a whole is routable.
     pub indices: Vec<NodeIndex>,
     pub kind: InteractionKind,
-    /// For a 2q node, the estimated native 2q gate count (at most 3) it adds to the 2q block on its
+    /// For a 2q node, the estimated CX-like gate count (at most 3) it adds to the 2q block on its
     /// pair that 2q-block resynthesis could fuse, or `None` if it contains anything ending the block.
     pub block: Option<u8>,
 }
@@ -89,19 +91,23 @@ impl SabreNode {
     }
 }
 
-/// The estimated native 2q gate count of a unitary gate on at most two qubits (CX-like gates are
-/// one, other 2q gates may need three), or `None` for anything that ends a fusible 2q block.
-fn block_gates(op: &PackedOperation, qargs: &[Qubit]) -> Option<u8> {
-    if matches!(
-        op.view(),
-        OperationRef::ControlFlow(_)
-            | OperationRef::StandardInstruction(_)
-            | OperationRef::Store(_)
-            | OperationRef::PauliProductMeasurement(_)
-    ) {
+/// Approximate CX count for gates eligible for `DAGCircuit::collect_2q_runs`, or `None` for a
+/// block boundary. Counts are a proxy: cancellation and special parameters can change the cost.
+fn block_gates(inst: &PackedInstruction, qargs: &[Qubit]) -> Option<u8> {
+    if inst.is_parameterized()
+        || !matches!(
+            inst.op.view(),
+            OperationRef::StandardGate(_)
+                | OperationRef::Unitary(_)
+                | OperationRef::PyCustom(PyInstruction {
+                    kind: PyOpKind::Gate,
+                    ..
+                })
+        )
+    {
         return None;
     }
-    match (qargs, op.try_standard_gate()) {
+    match (qargs, inst.op.try_standard_gate()) {
         ([_], _) => Some(0),
         (
             [_, _],
@@ -190,7 +196,7 @@ impl SabreDAG {
             } else {
                 InteractionKind::from_op(&inst.op, dag.get_qargs(inst.qubits))?
             };
-            let gates = block_gates(&inst.op, dag.get_qargs(inst.qubits));
+            let gates = block_gates(inst, dag.get_qargs(inst.qubits));
             match predecessors(dag_node, &wire_pos) {
                 Predecessors::AllUnmapped => match kind {
                     InteractionKind::Synchronize => {
