@@ -16,8 +16,8 @@ use rustworkx_core::petgraph::prelude::*;
 use thiserror::Error;
 
 use qiskit_circuit::dag_circuit::{DAGCircuit, NodeType, Wire};
-use qiskit_circuit::operations::ControlFlowView;
 use qiskit_circuit::operations::Operation;
+use qiskit_circuit::operations::{ControlFlowView, OperationRef, StandardGate};
 use qiskit_circuit::packed_instruction::PackedOperation;
 use qiskit_circuit::{Qubit, VirtualQubit};
 
@@ -75,13 +75,40 @@ pub struct SabreNode {
     /// node as a whole is routable.
     pub indices: Vec<NodeIndex>,
     pub kind: InteractionKind,
+    /// For a 2q node, the estimated native 2q gate count (at most 3) it adds to the 2q block on its
+    /// pair that 2q-block resynthesis could fuse, or `None` if it contains anything ending the block.
+    pub block: Option<u8>,
 }
 impl SabreNode {
-    fn new(initial: NodeIndex, kind: InteractionKind) -> Self {
+    fn new(initial: NodeIndex, kind: InteractionKind, gates: Option<u8>) -> Self {
         Self {
             indices: vec![initial],
             kind,
+            block: gates,
         }
+    }
+}
+
+/// The estimated native 2q gate count of a unitary gate on at most two qubits (CX-like gates are
+/// one, other 2q gates may need three), or `None` for anything that ends a fusible 2q block.
+fn block_gates(op: &PackedOperation, qargs: &[Qubit]) -> Option<u8> {
+    if matches!(
+        op.view(),
+        OperationRef::ControlFlow(_)
+            | OperationRef::StandardInstruction(_)
+            | OperationRef::Store(_)
+            | OperationRef::PauliProductMeasurement(_)
+    ) {
+        return None;
+    }
+    match (qargs, op.try_standard_gate()) {
+        ([_], _) => Some(0),
+        (
+            [_, _],
+            Some(StandardGate::CX | StandardGate::CY | StandardGate::CZ | StandardGate::ECR),
+        ) => Some(1),
+        ([_, _], _) => Some(3),
+        _ => None,
     }
 }
 
@@ -163,13 +190,14 @@ impl SabreDAG {
             } else {
                 InteractionKind::from_op(&inst.op, dag.get_qargs(inst.qubits))?
             };
+            let gates = block_gates(&inst.op, dag.get_qargs(inst.qubits));
             match predecessors(dag_node, &wire_pos) {
                 Predecessors::AllUnmapped => match kind {
                     InteractionKind::Synchronize => {
                         initial.push(dag_node);
                     }
                     kind => {
-                        let sabre_node = sabre.add_node(SabreNode::new(dag_node, kind));
+                        let sabre_node = sabre.add_node(SabreNode::new(dag_node, kind, gates));
                         first_layer.push(sabre_node);
                         for edge in dag.dag().edges_directed(dag_node, Direction::Incoming) {
                             wire_pos.insert(*edge.weight(), sabre_node);
@@ -182,7 +210,7 @@ impl SabreDAG {
                     // satisfied). In that case, _technically_ we could fold it onto the single
                     // constraining predecessor, but failing to do that doesn't cause correctness
                     // issues, makes the logic easier, and will have next-to-no performance cost.
-                    let sabre_node = sabre.add_node(SabreNode::new(dag_node, kind));
+                    let sabre_node = sabre.add_node(SabreNode::new(dag_node, kind, gates));
                     for edge in dag.dag().edges_directed(dag_node, Direction::Incoming) {
                         if let Some(parent) = wire_pos.insert(*edge.weight(), sabre_node) {
                             sabre.add_edge(parent, sabre_node, ());
@@ -200,10 +228,11 @@ impl SabreDAG {
                         (_, InteractionKind::Synchronize)
                         | (InteractionKind::TwoQ(_), InteractionKind::TwoQ(_)) => {
                             prev.indices.push(dag_node);
+                            prev.block = prev.block.zip(gates).map(|(n, gates)| (n + gates).min(3));
                         }
                         // Otherwise we need the router to evaluate it.
                         (_, kind) => {
-                            let sabre_node = sabre.add_node(SabreNode::new(dag_node, kind));
+                            let sabre_node = sabre.add_node(SabreNode::new(dag_node, kind, gates));
                             sabre.add_edge(prev_sabre_node, sabre_node, ());
                             for edge in dag.dag().edges_directed(dag_node, Direction::Incoming) {
                                 wire_pos.insert(*edge.weight(), sabre_node);
@@ -241,6 +270,7 @@ impl SabreDAG {
             dag.add_node(SabreNode {
                 indices: vec![],
                 kind,
+                block: node.block,
             });
         }
         for edge in self.dag.edge_references() {

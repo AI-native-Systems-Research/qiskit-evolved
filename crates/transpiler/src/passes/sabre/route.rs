@@ -588,6 +588,12 @@ struct State {
     /// Reusable allocated storage space for tracking the current best swaps.  This is owned as
     /// part of the general state to avoid reallocation costs.
     best_swaps: Vec<[PhysicalQubit; 2]>,
+    /// Previous `last_block` values of qubits touched by swaps of the current search step, so the
+    /// release valve can unwind them.
+    block_undo: Vec<(PhysicalQubit, Option<(PhysicalQubit, u8)>)>,
+    /// For each physical qubit, the other qubit of the 2q block routed on it most recently (with no
+    /// swap on it since), and that block's estimated native 2q gate count (at most 3).
+    last_block: VecMap<PhysicalQubit, Option<(PhysicalQubit, u8)>>,
     rng: Pcg64Mcg,
     seed: u64,
 }
@@ -674,7 +680,7 @@ impl State {
             predecessors.push(these_predecessors);
         }
 
-        let state = State {
+        let mut state = State {
             predecessors: predecessors.into(),
             decay: vec![1.; num_qubits as usize].into(),
             layers,
@@ -683,10 +689,51 @@ impl State {
             reached_previous_layer: Vec::new(),
             swap_scores: Vec::with_capacity(problem.target.neighbors.edge_count() / 2),
             best_swaps: Vec::new(),
+            block_undo: Vec::new(),
+            last_block: vec![None; num_qubits as usize].into(),
             rng: Pcg64Mcg::seed_from_u64(seed),
             seed,
         };
+        state.advance_routed(problem, &order, 0);
         (state, order)
+    }
+
+    /// Close the 2q blocks on the wires of a swap applied at the current layout.
+    #[inline]
+    fn advance_swap(&mut self, swap: [PhysicalQubit; 2]) {
+        let [a, b] = swap;
+        self.block_undo.push((a, self.last_block[a].take()));
+        self.block_undo.push((b, self.last_block[b].take()));
+    }
+
+    /// Update the open 2q blocks for every node routed into `order` from
+    /// index `start` on, all of which were routed at the current layout.
+    fn advance_routed(&mut self, problem: RoutingProblem, order: &Order, start: usize) {
+        for item in &order.order[start..] {
+            let node = &problem.sabre.dag[item.node];
+            match &node.kind {
+                InteractionKind::TwoQ([a, b]) => {
+                    let (a, b) = (self.layout[*a], self.layout[*b]);
+                    let open = match (self.last_block[a], self.last_block[b]) {
+                        (Some((pa, c)), Some((pb, _))) if pa == b && pb == a => c,
+                        _ => 0,
+                    };
+                    let c = node.block.map_or(0, |gates| (open + gates).min(3));
+                    self.last_block[a] = (c > 0).then_some((b, c));
+                    self.last_block[b] = (c > 0).then_some((a, c));
+                }
+                // Other nodes end the 2q blocks on their qubits.
+                _ => {
+                    for index in &node.indices {
+                        if let NodeType::Operation(inst) = &problem.dag[*index] {
+                            for q in problem.dag.get_qargs(inst.qubits) {
+                                self.last_block[self.layout[VirtualQubit::new(q.0)]] = None;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Apply a swap to the program-state structures (front layer, extended set and current
@@ -730,6 +777,7 @@ impl State {
         nodes: &[NodeIndex],
         mut initial_swaps: Option<Vec<[PhysicalQubit; 2]>>,
     ) {
+        let start = order.order.len();
         // The delta-updates to layers only works if we know that we're starting the update from a
         // set of nodes that are in the front layer, and the rest of the layer structure is already
         // fully initialised.
@@ -824,6 +872,7 @@ impl State {
             initial_swaps.is_none(),
             "if initial swaps are given, at least one node must be known to be routable"
         );
+        self.advance_routed(problem, order, start);
     }
 
     /// Add swaps to the current set that greedily bring the nearest node together.  This is a
@@ -873,7 +922,10 @@ impl State {
             let end = shortest_path.len() - 1 - i;
             current_swaps.push([shortest_path[end], shortest_path[end - 1]]);
         }
-        current_swaps.iter().for_each(|&swap| self.apply_swap(swap));
+        current_swaps.iter().for_each(|&swap| {
+            self.apply_swap(swap);
+            self.advance_swap(swap);
+        });
 
         // If we apply a single swap it could be that we route 2 nodes; that is a setup like
         //  A - B - A - B
@@ -893,12 +945,26 @@ impl State {
         // swap if it involves at least one active qubit (i.e. it must affect the "basic"
         // heuristic), and if it involves two active qubits, we choose the `swap[0] < swap[1]` form
         // to make a canonical choice.
+        //
+        // A swap directly after the 2q block on the same pair is fused into it by 2q-block
+        // resynthesis: a block of `c` native gates grows to `min(3, c + 1)` rather than `c + 3`
+        // (e.g. CX then SWAP is two CX, not four).  Such a swap starts with a negative credit for
+        // the native gates it saves, in units of one swap's three (the basic heuristic's units).
         self.swap_scores.clear();
         for phys in self.layers.front().iter_active(&self.layout) {
+            let start = self.swap_scores.len();
             for &neighbor in problem.target.neighbors[phys].iter() {
                 if neighbor > phys || !self.layers.front().is_active(neighbor) {
                     self.swap_scores.push(([phys, neighbor], 0.0));
                 }
+            }
+            if let Some((partner, c)) = self.last_block[phys]
+                && self.last_block[partner].is_some_and(|(q, _)| q == phys)
+                && let Some((_, credit)) = self.swap_scores[start..]
+                    .iter_mut()
+                    .find(|(swap, _)| swap[1] == partner)
+            {
+                *credit = f64::from(3 - ((c + 1).min(3) - c)) / -3.0;
             }
         }
 
@@ -919,7 +985,7 @@ impl State {
             };
             absolute_score += weight * front.total_score(&self.layout, dist);
             for (swap, score) in self.swap_scores.iter_mut() {
-                *score += weight * front.score(*swap, dist);
+                *score = weight * (*score + front.score(*swap, dist));
             }
         }
 
@@ -1069,11 +1135,13 @@ pub fn swap_map_trial<'a>(
     // this loop, we route either one or two gates.
     while !state.layers.front().is_empty() {
         let mut current_swaps: Vec<[PhysicalQubit; 2]> = Vec::new();
+        state.block_undo.clear();
         // Swap-mapping loop.  This is the main part of the algorithm, which we repeat until we
         // either successfully route a node, or exceed the maximum number of attempts.
         while routable_nodes.is_empty() && current_swaps.len() <= problem.heuristic.attempt_limit {
             let best_swap = state.choose_best_swap(problem);
             state.apply_swap(best_swap);
+            state.advance_swap(best_swap);
             current_swaps.push(best_swap);
             // These two nodes can't be the same; if they are, then the gate is on both qubits of
             // the swap, and so it would have been routable before we applied the swap too, i.e.
@@ -1103,6 +1171,9 @@ pub fn swap_map_trial<'a>(
                 .drain(..)
                 .rev()
                 .for_each(|swap| state.apply_swap(swap));
+            while let Some((q, block)) = state.block_undo.pop() {
+                state.last_block[q] = block;
+            }
             let force_routed = state.force_enable_closest_node(problem, &mut current_swaps);
             routable_nodes.extend(force_routed);
         }

@@ -2858,7 +2858,7 @@ class TestPostTranspileIntegration(QiskitTestCase):
 
         tqc = transpile(qc, backend=backend, seed_transpiler=2025_07_07, callback=callback)
         self.assertTrue(vf2_post_layout_called)
-        self.assertEqual([1, 4, 3], _get_index_layout(tqc, qubits))
+        self.assertEqual([1, 3, 4], _get_index_layout(tqc, qubits))
 
     @data("sabre", "lookahead", "basic")
     def test_final_layout_combined_correctly(self, routing):
