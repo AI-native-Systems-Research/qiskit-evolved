@@ -29,16 +29,24 @@ def setup_guard():
     if os.environ['MODE'] == 'teardown_fail':
         raise ValueError('teardown failed')
 
-def test_quality(benchmark, setup_guard):
+def test_quality(benchmark, setup_guard, monkeypatch):
     if os.environ['MODE'] == 'skip':
         pytest.skip('unsupported input')
     assert not Path('skipfile.txt').exists()
+    clock = [100.0]
+    if os.environ['MODE'] == 'timer_scope':
+        monkeypatch.setattr('quality_plugin.perf_counter', lambda: clock[0])
+    clock[0] += 100
     OBSERVED.update(optimization_level=int(os.environ['LEVEL']), seed=0, target_hash='target')
     @benchmark
     def result():
         with Path('calls.txt').open('a') as stream:
             stream.write('call\\n')
+        if os.environ['MODE'] == 'call_raises':
+            raise ValueError('transpilation failed')
+        clock[0] += 2.5
         return 7
+    clock[0] += 100
     Path('skipfile.txt').write_text('private state')
     benchmark.extra_info.update(output_gate_count_2q=result, output_depth_2q=0,
         output_num_qubits=4, native_2q_gate='cz', qasm_load_time=999)
@@ -97,6 +105,9 @@ def test_actual_fixture_single_call_and_concurrent_isolation(tmp_path):
         quality = json.loads((work / "quality.json").read_text())
         assert quality["status"] == "passed"
         assert quality["call_count"] == 1
+        assert quality["runtime_s"] > 0
+        assert quality["runtime_method"] == "perf_counter"
+        assert quality["runtime_scope"] == "benchmark_callable"
         assert (work / "calls.txt").read_text() == "call\n"
         assert quality["extra_info"]["output_depth_2q"] == 0
         assert "qasm_load_time" not in quality["extra_info"]
@@ -108,6 +119,7 @@ def test_actual_fixture_single_call_and_concurrent_isolation(tmp_path):
     [
         ("setup_fail", "failed", 0),
         ("call_fail", "failed", 1),
+        ("call_raises", "failed", 1),
         ("teardown_fail", "failed", 1),
         ("skip", "skipped", 0),
     ],
@@ -117,6 +129,16 @@ def test_failed_and_skipped_tests_export_quality(tmp_path, mode, status, calls):
     quality = json.loads((work / "quality.json").read_text())
     assert quality["status"] == status, result.stdout + result.stderr
     assert quality["call_count"] == calls
+    if not calls or mode == "call_raises":
+        assert quality["runtime_s"] is None
+
+
+def test_runtime_excludes_setup_and_validation(tmp_path):
+    work, result = child(tmp_path, "timer_scope")
+    assert result.returncode == 0, result.stdout + result.stderr
+    quality = json.loads((work / "quality.json").read_text())
+    assert quality["runtime_s"] == 2.5
+    assert quality["call_count"] == 1
 
 
 @pytest.mark.parametrize(

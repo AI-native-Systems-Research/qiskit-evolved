@@ -1,11 +1,19 @@
-"""Pytest plugin exporting quality even when benchmark statistics are disabled."""
+"""Export quality and single-call runtime with benchmark calibration disabled."""
 
 import json
 import os
 from pathlib import Path
+from time import perf_counter
 
 import pytest
-from schemas import QUALITY_FIELDS, SCHEMA, atomic_json
+from schemas import (
+    QUALITY_FIELDS,
+    RUNTIME_METHOD,
+    RUNTIME_SCOPE,
+    SCHEMA,
+    atomic_json,
+    valid_runtime,
+)
 
 
 def pytest_configure(config):
@@ -23,13 +31,16 @@ def pytest_configure(config):
 
     def counted(fixture, function, *args, **kwargs):
         if not fixture.disabled or fixture.timeout_skip_list or fixture.cprofile:
-            raise ValueError("Benchmark timing, preflight, and profiling must be disabled")
+            raise ValueError("Benchmark calibration, preflight, and profiling must be disabled")
 
         def once(*call_args, **call_kwargs):
             fixture._bp_calls = getattr(fixture, "_bp_calls", 0) + 1
             if fixture._bp_calls != 1:
                 raise ValueError("More than one transpilation attempted")
-            return function(*call_args, **call_kwargs)
+            start = perf_counter()
+            result = function(*call_args, **call_kwargs)
+            fixture._bp_runtime_s = perf_counter() - start
+            return result
 
         return original(fixture, once, *args, **kwargs)
 
@@ -69,11 +80,16 @@ def pytest_runtest_makereport(item, call):
             "node_id": item.nodeid,
             "extra_info": {},
             "call_count": 0,
+            "runtime_s": None,
+            "runtime_method": RUNTIME_METHOD,
+            "runtime_scope": RUNTIME_SCOPE,
         }
         item._bp_record = record
     fixture = item.funcargs.get("benchmark")
     if fixture is not None:
         record["call_count"] = getattr(fixture, "_bp_calls", 0)
+        runtime = getattr(fixture, "_bp_runtime_s", None)
+        record["runtime_s"] = runtime if valid_runtime(runtime) else None
         record["extra_info"] = {k: v for k, v in fixture.extra_info.items() if k in QUALITY_FIELDS}
     from bp_runtime import OBSERVED
 
@@ -82,6 +98,8 @@ def pytest_runtest_makereport(item, call):
         errors = []
         if record["call_count"] != 1:
             errors.append("expected exactly one benchmark callable execution")
+        if record["runtime_s"] is None:
+            errors.append("expected a finite positive callable runtime")
         identity = record["identity"]
         for key in ("optimization_level", "seed", "target_hash"):
             if identity.get(key) != OBSERVED.get(key) or key not in OBSERVED:

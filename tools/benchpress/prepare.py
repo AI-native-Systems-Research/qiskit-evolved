@@ -19,6 +19,7 @@ from schemas import (
     BENCHMARK,
     BENCHPRESS,
     REVISIONS,
+    RUNTIME_MEASUREMENT,
     THREADS,
     atomic_json,
     atomic_text,
@@ -415,6 +416,7 @@ def prepare(root):
         write_jsonl(results / "panel.jsonl", panel)
         write_jsonl(results / "cases.jsonl", cases)
         write_jsonl(root / "tasks" / f"{config['profile']}.jsonl", tasks)
+        config["runtime_measurement"] = RUNTIME_MEASUREMENT
         atomic_json(
             results / "profile.json",
             {
@@ -426,6 +428,7 @@ def prepare(root):
                     "backend_seed",
                     "run_timeout_s",
                     "element_timeout_s",
+                    "runtime_measurement",
                 )
             },
         )

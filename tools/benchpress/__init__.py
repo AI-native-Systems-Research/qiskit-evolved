@@ -1,1 +1,1 @@
-"""Isolated, quality-only Benchpress comparison tools."""
+"""Isolated Benchpress quality and single-call runtime comparison tools."""

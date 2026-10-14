@@ -135,5 +135,8 @@ def test_real_collection_and_circuits_at_both_levels(tmp_path):
             quality = read_json(work / "quality.json")
             assert quality["call_count"] == 1
             assert quality["status"] == "passed"
+            assert quality["runtime_s"] > 0
+            assert quality["runtime_method"] == "perf_counter"
+            assert quality["runtime_scope"] == "benchmark_callable"
             assert "qasm_load_time" not in quality["extra_info"]
     semantic_check(sys.executable, tmp_path / "semantic.log", tmp_path)

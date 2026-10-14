@@ -1,6 +1,8 @@
-# Benchpress quality comparison on LSF
+# Benchpress quality and runtime comparison on LSF
 
-This harness implements the [comparison plan](../../design/benchpress_comparison_plan.md) and [LSF implementation plan](../../design/benchpress_lsf_implementation_plan.md). It compares **native two-qubit gate count and depth**, with optimization levels **2 and 3**, seeds **0, 1, 2**, and the fixed **50 circuit/target entries**. One submission builds and validates both revisions, runs **150 array elements / 600 single-call invocations**, and generates reports. The default concurrency is **16 elements**. There is no runtime benchmark or preliminary sizing campaign.
+This harness implements the [comparison plan](../../design/benchpress_comparison_plan.md) and [LSF implementation plan](../../design/benchpress_lsf_implementation_plan.md). It compares **native two-qubit gate count, depth, and transpilation runtime**, with optimization levels **2 and 3**, seeds **0, 1, 2**, and the fixed **50 circuit/target entries**. One submission builds and validates both revisions, runs **150 array elements / 600 single-call invocations**, and generates reports. The default concurrency is **16 elements**. Runtime is recorded automatically around the existing transpilation call; no additional invocations or timing flags are needed.
+
+The timer measures wall-clock seconds around `pm.run(circuit)` using `perf_counter`, excluding circuit loading, pass-manager construction, pytest startup, and validation. All profiles, including `full`, take one sample per revision/level/seed without warmup or calibration. Fixed baseline-first ordering and host load can affect these observations; runtime reports describe the measured single-call differences.
 
 The baseline is `1298f960b7e814cfcb6aa9338b548ec5c6d2b355`; the candidate is `90ccaac29b2a547592e870797265007a128a02eb`. They remain independent of the harness commit. Continue on `sabre-choose-best-swap-heuristics-benchpress`.
 
@@ -84,11 +86,15 @@ Start with **`$BP_RESULTS/results/report.md`**. Operational status is **`$BP_RES
 - `results/manifest.json`: source/build/dependency/config/input hashes, platform, thread settings, seeds, levels, and immutable artifact checksums.
 - `results/{inventory,panel,cases}.jsonl`, `tasks/<profile>.jsonl`: inventory, selected inputs, level expansion, and one-based array mapping.
 - `results/raw/<stage>/<panel-id>/opt-<level>/seed-<seed>/attempt-<attempt>/<revision>/`: `run.json`, `quality.json`, JUnit, stdout/stderr, private working directory/cache. Killed/unstarted children receive synthesized records; interrupted records remain alongside them.
-- `results/tables/`: `runs.csv`, `paired_seeds.csv`, `cases.csv`, `coverage.csv`, `regressions.csv`, `levels.csv`, `groups.csv`, and separate `retry_runs.csv`.
-- `results/summary.json`, `plots/{opt-2,opt-3,levels}/*.{svg,png}`, `checksums.sha256`: aggregate quality data and figures.
+- `results/tables/`: `runs.csv`, `paired_seeds.csv`, `cases.csv`, `coverage.csv`, `regressions.csv` (quality), `runtime_regressions.csv` (complete-case slowdowns), `levels.csv`, `groups.csv`, and separate `retry_runs.csv`.
+- `results/summary.json`, `plots/{opt-2,opt-3,levels}/*.{svg,png}`, `checksums.sha256`: aggregate quality/runtime data and figures, with independent runtime coverage.
 - `.lsf/ledger.json`, `scripts/`, `logs/`, `diagnostics/`, `outcomes/`: submission intent, exact commands, scheduler responses, worker outcomes, and reconciled element records.
 
-Comparisons require matching input/config/target/seed/revision identities and a common element allocation/attempt. A complete case requires all configured seeds. Zero gates/depth are valid; percentage changes with a zero baseline are blank. Failures and incomplete cases remain in coverage. Reports make no compilation-performance or hardware-speedup claims.
+Comparisons require matching input/config/target/seed/revision identities and a common element allocation/attempt. A complete case requires all configured seeds. Zero gates/depth are valid; percentage changes with a zero baseline are blank. Failures and incomplete cases remain in coverage.
+
+`quality.json` records `runtime_s`, `runtime_method`, and `runtime_scope`. Paired tables report baseline/candidate seconds, `runtime_change_s` (candidate minus baseline), `runtime_ratio` (candidate/baseline), and `runtime_change_pct`; negative changes or ratios below one mean faster. Cases use medians of paired per-seed changes and ratios. Group summaries report runtime-complete case counts, median changes, geometric-mean ratios, and faster/tie/slower counts. Level comparisons measure L3 relative to L2 on the common complete panel.
+
+Runtime has independent validity and coverage: missing, nonpositive, nonfinite, or unsupported timings do not invalidate otherwise valid quality results. Failed invocations never contribute runtime comparisons. Older campaigns retain their quality results with unavailable runtime when processed by the updated collector; process timestamps, JUnit durations, and LSF accounting cannot reconstruct this measurement. To measure runtime, commit the updated harness and submit a **new results root** with the same command above. Resuming an old session uses its archived harness. Reports do not infer hardware execution speedups from compilation runtime or circuit depth.
 
 ## Local verification
 

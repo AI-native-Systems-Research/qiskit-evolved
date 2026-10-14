@@ -5,6 +5,7 @@ import datetime
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -16,6 +17,14 @@ CANDIDATE = "90ccaac29b2a547592e870797265007a128a02eb"
 BENCHPRESS = "b695f30e83a32bac05b9b4d8e98d37ba9aae5236"
 BENCHMARK = "e33f5934cb462e719b13b8d352ced107f575b4f7"
 REVISIONS = ("baseline", "candidate")
+RUNTIME_METHOD = "perf_counter"
+RUNTIME_SCOPE = "benchmark_callable"
+RUNTIME_MEASUREMENT = {
+    "method": RUNTIME_METHOD,
+    "scope": RUNTIME_SCOPE,
+    "unit": "seconds",
+    "calls_per_invocation": 1,
+}
 THREADS = {
     "RAYON_NUM_THREADS": "1",
     "QISKIT_NUM_PROCS": "1",
@@ -35,6 +44,15 @@ QUALITY_FIELDS = (
     "output_circuit_operations",
     "native_2q_gate",
 )
+
+
+def valid_runtime(value):
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
 
 
 def utcnow():

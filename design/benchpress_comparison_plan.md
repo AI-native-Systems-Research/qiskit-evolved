@@ -2,7 +2,7 @@
 
 Prepared on 2026-10-14. This document specifies the cluster comparison. The [harness is implemented](../tools/benchpress/README.md); local adapter checks have run, but Linux builds of the two pinned revisions and the LSF campaign have not run.
 
-**Run one quality comparison at optimization levels 2 and 3.** The `quality` profile uses the fixed 50-entry circuit/target panel with **three transpiler seeds (`0,1,2`) and one transpilation per revision/level/seed**. Each LSF array element runs both revisions at both levels sequentially on the same host. Run **16 array elements concurrently** initially: **150 array elements / 600 quality invocations**. Build and correctness validation are followed directly by this array and its report. Compilation runtime is outside the experiment; job timeouts and a three-hour campaign deadline remain execution controls. The full corpus is optional.
+**Run one quality and compilation-runtime comparison at optimization levels 2 and 3.** The `quality` profile uses the fixed 50-entry circuit/target panel with **three transpiler seeds (`0,1,2`) and one transpilation per revision/level/seed**. Measure the wall-clock runtime of that single transpilation callable as well as its circuit quality. Each LSF array element runs both revisions at both levels sequentially on the same host. Run **16 array elements concurrently** initially: **150 array elements / 600 invocations**. Build and correctness validation are followed directly by this array and its report. Job timeouts and a three-hour campaign deadline remain execution controls, distinct from the measured callable runtime. The full corpus is optional.
 
 The detailed implementation specification, CLI arguments, LSF submission sequence, retry behavior, and shared-filesystem output layout are in [benchpress_lsf_implementation_plan.md](benchpress_lsf_implementation_plan.md). That document defines the cluster workflow; the direct build/smoke commands below are manual reference steps, not instructions to build on the laptop or run benchmarks on an LSF login node.
 
@@ -18,10 +18,11 @@ Compare these exact commits from this repository:
 
 The baseline is **the parent of the algorithm commit**, not the parent of the current planning branch tip. At inspection, current `HEAD^` is the candidate and `HEAD^^` is the baseline; future planning/runner commits will move those offsets again. Always use the explicit Qiskit hashes above. Separately record the harness commit containing the implementation used to submit/run the jobs. Stay on the existing `sabre-choose-best-swap-heuristics-benchpress` branch for this work; do not reset or repurpose its history. The algorithm changes are in `crates/transpiler/src/passes/sabre/dag.rs` and `route.rs`; the other five changed files update tests. Both Qiskit revisions report `2.6.0.dev0`, so the package version alone cannot identify them.
 
-Answer two questions:
+Answer three questions:
 
 1. Does the candidate reduce final native two-qubit gate count and two-qubit depth after transpilation and optimization, separately at levels 2 and 3?
 2. Are these quality changes consistent across circuits, connectivity, and transpiler seeds, without new correctness failures?
+3. How does the candidate change compilation runtime in seconds and percent, and which quality improvements coincide with slower or faster transpilation?
 
 Raw SWAP count is a diagnostic, not the primary quality measure. This change explicitly anticipates fusion during later synthesis; a route with more SWAPs can produce fewer native gates. The wire-ready score estimates depth rather than calibrated hardware execution time. Do not report a hardware speedup from that score or from circuit depth alone.
 
@@ -34,7 +35,7 @@ Use [Qiskit/benchpress](https://github.com/Qiskit/benchpress) at inspected commi
 | Benchpress runs directly with pytest; its Qiskit tests live in `benchpress/qiskit_gym`. | Run from the Benchpress checkout with the selected environment's Python. |
 | Relevant suites are `device_transpile` and `abstract_transpile`. | Make these the comparison; construction/manipulation suites are optional controls. |
 | Upstream defaults are optimization level 2, `fake_torino`, and abstract topologies `all-to-all`, `square`, `heavy-hex`, `linear`. | Run levels **2 and 3**, using separate immutable config files; retain the default CZ basis. Device tests use their backend's native basis. |
-| Transpilation tests call `pm.run(circuit)` through the benchmark fixture. | Use `--benchmark-disable` with timeout preflight disabled so the callable executes once without calibration or timed rounds. |
+| Transpilation tests call `pm.run(circuit)` through the benchmark fixture. | Use `--benchmark-disable` with timeout preflight disabled so the callable executes once without calibration or repeated rounds; measure that call in the adapter using `time.perf_counter()`. |
 | Quality metrics are stored in `benchmark.extra_info`: `output_gate_count_2q`, `output_depth_2q`, `output_circuit_operations`, and `output_num_qubits`. | Export these to `quality.json` through the adapter; disabled benchmark timing does not produce the usual statistics records. |
 | Those count/depth metrics filter on the backend's single native entangling gate, such as CZ. | Record the gate name; do not assume the metric always counts CX or recursively covers control-flow blocks. |
 | The relevant pass-manager calls omit `seed_transpiler`. `FlexibleBackend` also omits a seed when constructing `GenericBackendV2`. | Apply the same small reproducibility patch to the shared Benchpress checkout before either run. |
@@ -124,10 +125,10 @@ Prepare one patch against the Benchpress checkout and save it as `results/benchp
 3. Add seed and configuration identifiers to the output metadata. Preserve the existing metrics and validation. Make missing seed variables fail clearly rather than silently restoring randomness.
 4. Sort collected node IDs in a pytest collection hook, then save the exact ordered selection. Reuse it for both revisions. This avoids filesystem-order differences in Feynman/QASMBench discovery.
 5. Add a `BENCHPRESS_CONFIG` environment override to `BenchpressConfig`'s filename selection, falling back to its upstream default only outside the controlled run. Each child uses an absolute path to an archived `opt-2.conf` or `opt-3.conf` before importing Benchpress. Each child also receives its own working directory, pytest cache, temporary directory, and output paths. Never edit a shared `default.conf` or share `skipfile.txt` between array elements.
-6. Run pytest with `--benchmark-disable --timeout-skip-list=0`; reject timing/profiling options in controlled jobs. The pinned fixture's disabled path calls the transpilation callable once. Disabling timing alone is insufficient if a timeout preflight is enabled, because that would call it again. Add a quality export hook that captures `benchmark.extra_info` after the test call and writes `quality.json` with identity and validation status, including failure/skip outcomes. Do not rely on benchmark JSON or write timing statistics.
-7. In quality mode, bypass the QASM loader's `perf_counter()` calls and `qasm_load_time` field. Export only the agreed quality/input metadata. Pytest/LSF may still include incidental job durations in diagnostic logs; the collector does not use them as scientific metrics.
+6. Run pytest with `--benchmark-disable --timeout-skip-list=0`; reject upstream benchmark repetition/profiling options in controlled jobs. The pinned fixture's disabled path calls the transpilation callable once. Disabling upstream timing alone is insufficient if a timeout preflight is enabled, because that would call it again. Wrap the actual benchmark callable with `time.perf_counter()` and export its elapsed seconds as `runtime_s`, with `runtime_method="perf_counter"` and `runtime_scope="benchmark_callable"`. Exclude circuit loading, pass-manager construction, pytest startup, output-metric extraction, and validation from the interval. Add an export hook that writes these timing fields alongside identity, quality fields, and final validation status to `quality.json`, including failure/skip outcomes. Do not depend on upstream benchmark statistics or benchmark JSON.
+7. In quality mode, continue to bypass the QASM loader's `perf_counter()` calls and `qasm_load_time` field. Pytest/LSF may still include incidental job durations in diagnostic logs; the collector never substitutes these durations for callable runtime. Require finite positive timing samples for successful runtime comparisons and preserve missing/invalid timing separately from quality validity.
 
-The single-call behavior is verified in the pinned [pytest-benchmark fixture](https://github.com/1ucian0/pytest-benchmark/blob/e33f5934cb462e719b13b8d352ced107f575b4f7/src/pytest_benchmark/fixture.py). Test the exporter independently: disabling the benchmark fixture must preserve gate/depth metrics and native validation.
+The single-call behavior is verified in the pinned [pytest-benchmark fixture](https://github.com/1ucian0/pytest-benchmark/blob/e33f5934cb462e719b13b8d352ced107f575b4f7/src/pytest_benchmark/fixture.py). Test the exporter independently: disabling the benchmark fixture must preserve gate/depth metrics and native validation while the adapter times exactly one callable execution.
 
 Use these settings before importing Qiskit in every benchmark process:
 
@@ -241,16 +242,18 @@ One array element owns `(panel_entry, seed)` and executes baseline/candidate at 
 
 For `N` panel entries, `L` levels, and `S` seeds, there are `NS` elements and `2NLS` invocations. The main run has **150 elements and 600 single-transpilation invocations**. An optional full run over all 1,054 inventory entries with five seeds has 5,270 elements / 21,080 invocations before eligibility exclusions; split it into site-supported array sizes while enforcing one campaign-wide concurrency cap.
 
-Each revision pair uses the same transpiler seed, backend seed `424242`, and input. Quantum Volume's generation seed stays `12345`. There are no process repetitions or timed rounds in the quality campaign. Small correctness/reproducibility checks belong to build validation and do not add scientific rows to the main comparison.
+Each revision pair uses the same transpiler seed, backend seed `424242`, and input. Quantum Volume's generation seed stays `12345`. The adapter records one elapsed-time sample; there are no process repetitions, calibration, warmups, or repeated benchmark rounds. The `quality`, `followup-quality`, and `full` profiles all use this execution mode: `full` expands corpus coverage and is not a repeated timing benchmark. Small correctness/reproducibility checks belong to build validation and do not add scientific rows to the main comparison.
+
+Treat runtime comparisons as single-call observations under the recorded allocation. Seeds vary the transpilation, rather than repeating an identical computation solely to estimate timing noise. Fixed baseline-first execution can introduce order effects, and different elements can run on different CPU models. Same-host pairing and fixed threads reduce some variation but do not establish a calibrated speedup or its uncertainty. A dedicated repeated, order-balanced timing campaign would require a separate design.
 
 ### 5.4 Execution stages
 
 A single submission starts the LSF manager, which performs:
 
 1. **Build and correctness validation:** build both pinned Linux release wheels and environments; run each revision's own affected Qiskit tests (`test_sabre_swap`, `test_sabre_layout`, `test_preset_passmanagers`, `test_transpile_layout`, compiler `test_transpiler`). Verify wheel imports and collect Benchpress at both levels. Resolve and freeze the requested panel.
-2. **Adapter smoke checks within validation:** SU2-89 and small `qaoa_n6`/linear on both revisions and levels: eight single-call invocations. Verify quality export, config selection, isolated directories, native validation, and a small semantic/reproducibility check. These are implementation checks, not a preliminary benchmark campaign.
+2. **Adapter smoke checks within validation:** SU2-89 and small `qaoa_n6`/linear on both revisions and levels: eight single-call invocations. Verify quality/runtime export, config selection, isolated directories, native validation, and a small semantic/reproducibility check. These are implementation checks, not a preliminary benchmark campaign.
 3. **Quality array:** submit all 150 main elements directly after validation, with at most 16 running concurrently. Account for every scheduled invocation, including failures and unstarted tasks.
-4. **Report:** after all elements settle, produce gate-count/depth comparisons per level, coverage, and level-3-versus-level-2 quality summaries.
+4. **Report:** after all elements settle, produce gate-count/depth and runtime comparisons per level, separate quality/runtime coverage, and level-3-versus-level-2 summaries.
 
 Treat `all-to-all` and cases where SABRE does not run as separate controls. Use the queue's eligible hosts without added CPU-count, CPU-model, or load selectors. Record hardware and affinity for provenance and verify build/runtime platform compatibility. Each element retains its common host and fixed thread settings. No pytest-xdist or parallel children inside one element are required.
 
@@ -258,7 +261,7 @@ Treat `all-to-all` and cases where SABRE does not run as separate controls. Use 
 
 Keep the **three-hour campaign deadline**, beginning when the first quality worker starts, as a limit on cluster work. It includes later queue waits and compute; build/validation, initial queue wait, and final reporting are separate. Enforce **300 seconds per child**, a **25-minute internal element deadline**, and a **30-minute LSF execution limit**. These limits control resource use; they do not measure compilation performance or predict completion time.
 
-At the campaign deadline, cancel unfinished owned array jobs, confirm terminal states, and report partial coverage. Record unresolved scheduler queries or unconfirmed cancellation explicitly. The manager has a separate 24-hour execution limit. Sixteen workers reserve up to 16 physical cores and 128 GB at 8 GB each, across eligible hosts. Preserve Linux build artifacts for reuse. Do not provide a measured ETA or speedup from this experiment.
+At the campaign deadline, cancel unfinished owned array jobs, confirm terminal states, and report partial coverage. Record unresolved scheduler queries or unconfirmed cancellation explicitly. The manager has a separate 24-hour execution limit. Sixteen workers reserve up to 16 physical cores and 128 GB at 8 GB each, across eligible hosts. Preserve Linux build artifacts for reuse. Report measured callable-runtime differences with the single-call limitations above; do not infer a campaign ETA from them.
 
 ### 5.6 Optional additional coverage
 
@@ -282,6 +285,7 @@ Join baseline/candidate by **profile/stage + node ID + optimization level + inpu
 | --- | --- |
 | Identity | Qiskit/harness/Benchpress/plugin hashes, wheel/extension hash, patch/lock/input/config/target hashes, node ID, seed |
 | Quality | `quality.json` fields `extra_info.output_gate_count_2q` and `output_depth_2q` |
+| Runtime | `quality.json` fields `runtime_s`, `runtime_method="perf_counter"`, `runtime_scope="benchmark_callable"`; one wall-clock sample per invocation |
 | Context | Native two-qubit gate name, input/output width, operation histogram, topology, family, level, thread/trial settings |
 | Outcome | Passed, skipped, failed, timeout, cancelled, not run, or missing artifact, with reason |
 
@@ -289,12 +293,16 @@ For positive baseline gate/depth metrics, report `100 * (candidate / baseline - 
 
 Summarize the three paired seeds per case before aggregating across cases. Report medians, geometric-mean ratios for positive metrics, win/tie/loss counts, and the largest regressions, separately by level, topology, and circuit family. Treat seeds as repeated observations of a circuit, not independent circuits. If reporting uncertainty, resample whole circuit groups and state the limited panel/seed coverage. Compare level 3 versus level 2 within each Qiskit revision on the common complete panel.
 
+For each eligible runtime pair, calculate `runtime_change_s = candidate_runtime_s - baseline_runtime_s`, `runtime_ratio = candidate_runtime_s / baseline_runtime_s`, and `runtime_change_pct = 100 * (runtime_ratio - 1)`. Negative change and a ratio below one mean faster transpilation; positive change means slower. Both samples must be finite positive numbers with the same supported timer and measurement scope. Zero, negative, non-finite, boolean, or nonnumeric samples are invalid runtime measurements; do not divide by zero or interpret a failed invocation's partial duration as a successful sample.
+
+Keep runtime completeness independent of quality completeness. Historical artifacts without timing remain valid quality results and have unavailable runtime; never reconstruct timing from timestamps, JUnit, or scheduler logs. A runtime-complete case has all configured seeds successfully quality-paired and runtime-paired. Report per-revision median seconds and medians of the **paired per-seed** seconds changes, ratios, and percentage changes. Do not replace paired differences with a difference of independent medians. Aggregate complete runtime cases separately per level, suite, and topology, with complete/missing counts, median changes, geometric-mean ratios, faster/tie/slower counts, and the largest slowdowns. Cross-level runtime comparisons require complete timing at both levels. Keep quality regressions and runtime regressions in separate tables, and show their tradeoffs in the report without dropping untimed quality results.
+
 Review rules:
 
 - Investigate every new correctness failure, crash, timeout, or missing result.
 - List every gate-count/depth regression; highlight increases above 5% with absolute counts so small-circuit percentages remain interpretable.
-- Report gate-count/depth tradeoffs explicitly. An overall quality claim must be supported by both coverage and paired summaries.
-- Keep all-to-all and no-routing controls visible separately. Do not make compilation-time or hardware-speedup claims.
+- Report gate-count/depth/runtime tradeoffs explicitly. An overall quality claim must be supported by both coverage and paired summaries; a runtime comparison must state its own complete-case denominator.
+- Keep all-to-all and no-routing controls visible separately. Describe runtime results as measured single-call compilation differences, and do not infer hardware execution speedups from circuit quality or compilation time.
 
 ## 8. Output format and artifacts
 
@@ -326,7 +334,9 @@ Use a fresh shared results directory for every campaign. All paths below describ
     tables/cases.csv
     tables/coverage.csv
     tables/regressions.csv
+    tables/runtime_regressions.csv
     tables/levels.csv
+    tables/groups.csv
     summary.json
     report.md
     plots/opt-2/*.{svg,png}
@@ -341,29 +351,29 @@ Stages are `smoke`, `quality`, `followup-quality`, and `full`. Use filesystem-sa
 
 ### 8.1 Raw data contract
 
-- **`manifest.json` / `profile.json`:** schema version, run/profile identity, explicit Qiskit and harness SHAs, Benchpress/plugin/patch/lock/input/config hashes, wheel/extension provenance, seed list, level list, single-call execution mode, thread/trial settings, resource limits, and immutable schedule.
+- **`manifest.json` / `profile.json`:** schema version, run/profile identity, explicit Qiskit and harness SHAs, Benchpress/plugin/patch/lock/input/config hashes, wheel/extension provenance, seed list, level list, single-call execution mode, runtime measurement contract, thread/trial settings, resource limits, and immutable schedule. Preserve archived manifests when reporting older untimed sessions.
 - **`panel.jsonl` / `cases.jsonl`:** full inventory, exact node IDs, circuit/HamLib identities, input hashes/qubits, topology/target/config fingerprints, selection status, and exclusion reasons. Panel entries expand to one case per level.
 - **`run.json`:** one scheduled invocation's identity, exact command/relevant environment, LSF host/job/index/attempt, exit status, reason, and artifact paths. UTC start/end timestamps may support job recovery and timeout handling; no elapsed-performance field is required. The controller synthesizes records for killed or unstarted jobs.
-- **`quality.json`:** adapter-produced quality result with schema version, full identity, execution mode `quality`, single-call evidence, validation status, and the input/output quality fields from `benchmark.extra_info`. No benchmark statistics or QASM load timing. Preserve partial metadata on failures; mark it ineligible for successful-pair aggregation.
+- **`quality.json`:** adapter-produced quality/runtime result with schema version, full identity, execution mode `quality`, single-call evidence, validation status, the input/output quality fields from `benchmark.extra_info`, and top-level `runtime_s`, `runtime_method`, and `runtime_scope`. No upstream benchmark statistics or QASM load timing. Preserve partial metadata on failures; mark it ineligible for successful-pair aggregation. Missing timing fields in older records must not invalidate their quality data.
 - **`junit.xml` / logs:** native test failure diagnostics. Incidental pytest/LSF duration fields stay diagnostic and are not extracted into scientific tables.
 
-Use UTF-8, explicit schema versions, integer counts, JSON `null` and empty CSV cells for unavailable metrics, and a separate reason field. Zero gates/depth are valid values.
+Use UTF-8, explicit schema versions, integer counts, floating-point runtime seconds, JSON `null` and empty CSV cells for unavailable metrics, and a separate reason field. Zero gates/depth are valid values; successful runtime samples must be positive and finite.
 
 ### 8.2 Comparison tables and report
 
 `runs.csv` contains every scheduled first-attempt invocation, including failures and timeouts:
 
 ```csv
-run_id,profile,stage,panel_id,case_id,node_id,suite,topology,optimization_level,lsf_job_id,array_index,host,attempt,revision,qiskit_sha,config_hash,target_hash,seed,status,reason,input_qubits,output_qubits,native_2q_gate,gate_count_2q,depth_2q,raw_artifact_dir
+run_id,profile,stage,panel_id,case_id,node_id,suite,topology,optimization_level,lsf_job_id,array_index,host,attempt,revision,qiskit_sha,config_hash,target_hash,seed,status,reason,input_qubits,output_qubits,native_2q_gate,gate_count_2q,depth_2q,runtime_s,runtime_method,runtime_scope,runtime_status,runtime_reason,raw_artifact_dir
 ```
 
-`paired_seeds.csv` has one row per case/seed with paired status and quality changes:
+`paired_seeds.csv` has one row per case/seed with paired status and quality/runtime changes:
 
 ```csv
-profile,stage,panel_id,case_id,optimization_level,seed,pair_status,baseline_gate_count_2q,candidate_gate_count_2q,gate_count_change,gate_count_change_pct,baseline_depth_2q,candidate_depth_2q,depth_change,depth_change_pct
+profile,stage,panel_id,case_id,optimization_level,seed,pair_status,baseline_gate_count_2q,candidate_gate_count_2q,gate_count_change,gate_count_change_pct,baseline_depth_2q,candidate_depth_2q,depth_change,depth_change_pct,baseline_runtime_s,candidate_runtime_s,runtime_change_s,runtime_ratio,runtime_change_pct,runtime_status
 ```
 
-A complete pair has one passing result from each revision in the same element attempt. A complete case has all configured seeds paired. Retain incomplete cases separately; cross-level comparisons require both levels complete. `cases.csv` summarizes seeds; `levels.csv` compares L3/L2 quality within each revision.
+A complete quality pair has one passing result from each revision in the same element attempt. A complete quality case has all configured seeds paired. Retain incomplete cases separately; cross-level quality comparisons require both levels complete. `runtime_status` independently distinguishes `available`, `missing`, `invalid`, and `not_applicable` on runs; `paired`, `missing`, `invalid`, and `ineligible` on seed pairs; and `complete` or `incomplete` on cases. `cases.csv` summarizes seeds and records runtime-paired seed counts. `levels.csv` compares L3/L2 quality and eligible runtime within each revision. `groups.csv` and `summary.json` include runtime coverage and aggregates; `runtime_regressions.csv` lists complete cases with runtime increases, while `regressions.csv` retains its quality meaning.
 
 | Profile, levels 2 and 3 | LSF elements | Invocation rows | Paired-seed rows | Case rows |
 | --- | ---: | ---: | ---: | ---: |
@@ -373,7 +383,7 @@ A complete pair has one passing result from each revision in the same element at
 
 Preserve canonical first-attempt rows and separate retry history. Scheduled but unstarted invocations count as `not_run`; exclusions before scheduling remain outside the selected denominator. Build smoke checks and optional follow-ups do not increase main-run counts.
 
-The Markdown report includes exact scope/seeds/levels, provenance, coverage, gate-count/depth comparisons by suite/topology, wins/ties/losses, largest changes, and links to raw artifacts. Provide baseline-versus-candidate gate/depth plots and quality-by-topology plots as SVG and PNG. Include no compilation-runtime tables, timing plots, or runtime forecast artifacts.
+The Markdown report includes exact scope/seeds/levels, provenance, separate quality/runtime coverage, gate-count/depth/runtime comparisons by suite/topology, wins/ties/losses, largest quality changes and runtime slowdowns, and links to raw artifacts. State seconds, ratio direction, measurement scope, and the single-call timing limitations. Provide baseline-versus-candidate gate/depth/runtime plots, topology summaries, and cross-level plots as SVG and PNG. Runtime plots use only eligible timing pairs and label seconds or percentage changes explicitly. Preserve quality plots for historical sessions with no timing and state that runtime is unavailable; do not invent timing plots or forecast artifacts.
 
 Save QPY only for explicitly investigated cases, retaining layout metadata and replay identity. Verify replay metrics match the original quality result. Publish the final scientific summary to `design/benchpress_comparison_results.md` only in a later explicit publication step.
 
@@ -382,10 +392,10 @@ Save QPY only for explicitly investigated cases, retaining layout metadata and r
 Implemented entry points (see the [usage guide](../tools/benchpress/README.md) for submission and local checks):
 
 - `tools/benchpress/prepare.py`: immutable inputs, release builds, dependency locks, validation, and provenance.
-- `tools/benchpress/adapter.py`: deterministic configuration/seeds, single-call mode, quality JSON exporter, and metadata.
+- `tools/benchpress/adapter.py` and `quality_plugin.py`: deterministic configuration/seeds, single-call mode and timer, quality/runtime JSON exporter, and metadata.
 - `tools/benchpress/lsf/`: launcher, manager, scheduler, ledger, worker context, and status/stop/resume controls based on the supplied reference.
 - `tools/benchpress/run.py`: isolated child execution, watchdogs, and raw outcomes for each element.
-- `tools/benchpress/compare.py`: quality pairing, coverage, CSV/JSON/plots, and report.
+- `tools/benchpress/compare.py`: quality/runtime pairing, independent coverage, CSV/JSON/plots, and report.
 
 Preserve existing `.gitignore` edits. Keep bulky wheels/checkouts/raw data in the run directory with an intentional ignore rule before execution.
 
@@ -393,8 +403,9 @@ Preserve existing `.gitignore` edits. Keep bulky wheels/checkouts/raw data in th
 - [ ] Dependencies, adapter, data, configurations, and targets are pinned and archived.
 - [ ] Affected tests, adapter smoke checks, and small semantic/reproducibility checks pass.
 - [ ] The same fixed 50-entry panel runs at both levels with seeds 0–2.
-- [ ] Each successful invocation calls the transpilation callable exactly once and exports quality without benchmark timing.
+- [ ] Each successful invocation calls the transpilation callable exactly once and exports quality and callable runtime without benchmark calibration or repetitions.
 - [ ] One main array follows build/validation directly; concurrency and deadline handling are verified.
 - [ ] No shared output/config/skipfile contamination; all scheduled outcomes are accounted for.
-- [ ] Reports contain gate count, two-qubit depth, coverage, and quality regressions with reconciled row counts.
+- [ ] Reports contain gate count, two-qubit depth, callable runtime, independent coverage, and separate quality/runtime regressions with reconciled row counts.
+- [ ] Historical untimed artifacts retain quality results with unavailable runtime; invalid samples and failed/incomplete pairs cannot enter runtime aggregates.
 - [ ] All raw quality/provenance artifacts and first-attempt failures are preserved.
