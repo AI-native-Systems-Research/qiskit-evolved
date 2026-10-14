@@ -1,8 +1,10 @@
 # Benchpress plan: SABRE fusion and wire-wait scoring versus baseline
 
-Prepared on 2026-10-14. This document specifies a future benchmark run; no builds or benchmarks were executed while preparing it.
+Prepared on 2026-10-14. This document specifies the cluster comparison. The [harness is implemented](../tools/benchpress/README.md); local adapter checks have run, but Linux builds of the two pinned revisions and the LSF campaign have not run.
 
-**Recommended first run: the `screening` profile.** Pilot 10 representative circuit/target cases, then run up to 50 cases with **three transpiler seeds, one process repetition per revision/seed, and at least three timed rounds per process**. This is at most **300 screening jobs**, with a **three-hour combined pilot/screening budget**, excluding setup, builds, validation, and analysis. Use pilot wall times to reduce the case count if necessary. The full-corpus profile remains an optional later experiment; it is not the default.
+**Run one quality comparison at optimization levels 2 and 3.** The `quality` profile uses the fixed 50-entry circuit/target panel with **three transpiler seeds (`0,1,2`) and one transpilation per revision/level/seed**. Each LSF array element runs both revisions at both levels sequentially on the same host. Run **16 array elements concurrently** initially: **150 array elements / 600 quality invocations**. Build and correctness validation are followed directly by this array and its report. Compilation runtime is outside the experiment; job timeouts and a three-hour campaign deadline remain execution controls. The full corpus is optional.
+
+The detailed implementation specification, CLI arguments, LSF submission sequence, retry behavior, and shared-filesystem output layout are in [benchpress_lsf_implementation_plan.md](benchpress_lsf_implementation_plan.md). That document defines the cluster workflow; the direct build/smoke commands below are manual reference steps, not instructions to build on the laptop or run benchmarks on an LSF login node.
 
 ## 1. Comparison and questions
 
@@ -11,15 +13,15 @@ Compare these exact commits from this repository:
 | Role | Commit | Description |
 | --- | --- | --- |
 | Baseline | `1298f960b7e814cfcb6aa9338b548ec5c6d2b355` | Parent of the SABRE change; currently also local `main` and `origin/main`. |
-| Candidate | `90ccaac29b2a547592e870797265007a128a02eb` | Current branch `sabre-choose-best-swap-heuristics`: “Include gate fusion and wire wait time in Sabre swap scoring”. |
+| Candidate | `90ccaac29b2a547592e870797265007a128a02eb` | Algorithm commit: “Include gate fusion and wire wait time in Sabre swap scoring”. |
+| Planning branch tip at inspection | `ff29e0f5650f4ae3f0bf4ddb86c97d1bd5a6a12c` | Current branch `sabre-choose-best-swap-heuristics-benchpress`; adds the plan and presentation above the algorithm commit. |
 
-The proposed baseline really is **one commit before the candidate**. Pin these hashes rather than resolving `HEAD^` again when executing the plan. The implementation changes are in `crates/transpiler/src/passes/sabre/dag.rs` and `route.rs`; the other five changed files update tests. Both revisions report Qiskit `2.6.0.dev0`, so the package version alone cannot identify them.
+The baseline is **the parent of the algorithm commit**, not the parent of the current planning branch tip. At inspection, current `HEAD^` is the candidate and `HEAD^^` is the baseline; future planning/runner commits will move those offsets again. Always use the explicit Qiskit hashes above. Separately record the harness commit containing the implementation used to submit/run the jobs. Stay on the existing `sabre-choose-best-swap-heuristics-benchpress` branch for this work; do not reset or repurpose its history. The algorithm changes are in `crates/transpiler/src/passes/sabre/dag.rs` and `route.rs`; the other five changed files update tests. Both Qiskit revisions report `2.6.0.dev0`, so the package version alone cannot identify them.
 
-Answer three questions:
+Answer two questions:
 
-1. Does the candidate reduce final native two-qubit gate count and two-qubit depth after transpilation and optimization?
-2. What compilation-time overhead or improvement accompanies the quality change?
-3. Are results consistent across circuits, connectivity, and transpiler seeds, without new correctness failures?
+1. Does the candidate reduce final native two-qubit gate count and two-qubit depth after transpilation and optimization, separately at levels 2 and 3?
+2. Are these quality changes consistent across circuits, connectivity, and transpiler seeds, without new correctness failures?
 
 Raw SWAP count is a diagnostic, not the primary quality measure. This change explicitly anticipates fusion during later synthesis; a route with more SWAPs can produce fewer native gates. The wire-ready score estimates depth rather than calibrated hardware execution time. Do not report a hardware speedup from that score or from circuit depth alone.
 
@@ -31,9 +33,9 @@ Use [Qiskit/benchpress](https://github.com/Qiskit/benchpress) at inspected commi
 | --- | --- |
 | Benchpress runs directly with pytest; its Qiskit tests live in `benchpress/qiskit_gym`. | Run from the Benchpress checkout with the selected environment's Python. |
 | Relevant suites are `device_transpile` and `abstract_transpile`. | Make these the comparison; construction/manipulation suites are optional controls. |
-| Defaults are optimization level 2, `fake_torino`, and abstract topologies `all-to-all`, `square`, `heavy-hex`, `linear`. | Keep level 2 and the default CZ basis for the main experiment. Device tests use their backend's native basis. |
-| Transpilation tests time `pm.run(circuit)`; circuit loading and pass-manager creation happen outside that timer. | Label the timing “pass-manager execution”, not total application startup or compilation including setup. |
-| Output metrics include `extra_info.output_gate_count_2q`, `output_depth_2q`, `output_circuit_operations`, and `output_num_qubits`. | Extract these alongside timing statistics from benchmark JSON. |
+| Upstream defaults are optimization level 2, `fake_torino`, and abstract topologies `all-to-all`, `square`, `heavy-hex`, `linear`. | Run levels **2 and 3**, using separate immutable config files; retain the default CZ basis. Device tests use their backend's native basis. |
+| Transpilation tests call `pm.run(circuit)` through the benchmark fixture. | Use `--benchmark-disable` with timeout preflight disabled so the callable executes once without calibration or timed rounds. |
+| Quality metrics are stored in `benchmark.extra_info`: `output_gate_count_2q`, `output_depth_2q`, `output_circuit_operations`, and `output_num_qubits`. | Export these to `quality.json` through the adapter; disabled benchmark timing does not produce the usual statistics records. |
 | Those count/depth metrics filter on the backend's single native entangling gate, such as CZ. | Record the gate name; do not assume the metric always counts CX or recursively covers control-flow blocks. |
 | The relevant pass-manager calls omit `seed_transpiler`. `FlexibleBackend` also omits a seed when constructing `GenericBackendV2`. | Apply the same small reproducibility patch to the shared Benchpress checkout before either run. |
 | The Qiskit requirements use a custom `pytest-benchmark` Git fork. | Install that fork at a fixed SHA, not the stock package or a moving branch. |
@@ -43,13 +45,13 @@ These observations come from the pinned [device tests](https://github.com/Qiskit
 
 ## 3. Isolated source trees and release builds
 
-Use two detached worktrees, two runtime environments, and separate wheel and Rust build directories. Leave the development checkout's existing `.gitignore` changes and untracked `design/` content intact. The commands below are an execution recipe, not actions already performed.
+Use two pinned source snapshots or detached worktrees, two runtime environments, and separate wheel and Rust build directories. Leave the development checkout's existing `.gitignore` changes intact. Build Linux wheels/environments on the cluster's compute architecture and shared filesystem; the local macOS environment cannot be copied to Linux workers. The commands below describe manual build mechanics; the LSF build job will carry them out with cluster paths.
 
 Prerequisites: the same Python 3.12 interpreter for both environments, a C toolchain, and the Rust toolchain selected by `rust-toolchain.toml` (`1.89`). Qiskit declares Python >=3.10 and Rust >=1.89; Python 3.12 is the proposed common choice, subject to the dependency smoke test.
 
 ```bash
-REPO=/Users/ophir/PycharmProjects/qiskit-evolved
-RUN_ROOT="$REPO/.benchpress-work/2026-10-14-screening"
+REPO=/shared/PROJECT/USER/qiskit-evolved
+RUN_ROOT=/shared/PROJECT/USER/benchpress-runs/2026-10-14-quality-o2-o3
 BASELINE=1298f960b7e814cfcb6aa9338b548ec5c6d2b355
 CANDIDATE=90ccaac29b2a547592e870797265007a128a02eb
 BENCHPRESS=b695f30e83a32bac05b9b4d8e98d37ba9aae5236
@@ -115,12 +117,17 @@ Before benchmarking, run an import check from the Benchpress directory in each e
 
 ## 4. Reproducibility patch and run configuration
 
-Prepare one patch against the Benchpress checkout and save it as `results/benchpress-reproducibility.patch`. Apply it once and reuse the resulting checkout for both environments. This patch is still to be implemented.
+Prepare one patch against the Benchpress checkout and save it as `results/benchpress-reproducibility.patch`. Apply it once and reuse the resulting checkout for both environments. The patch is generated by `tools/benchpress/adapter.py` and archived for each campaign.
 
-1. Add `seed_transpiler=int(os.environ["BENCHPRESS_TRANSPILE_SEED"])` to every `generate_preset_pass_manager` call in the three device and two abstract transpilation files. Add the necessary imports. Keep the optimization level and default layout/routing choices unchanged.
+1. Add `seed_transpiler=int(os.environ["BENCHPRESS_TRANSPILE_SEED"])` to every `generate_preset_pass_manager` call in the three device and two abstract transpilation files. Add the necessary imports. Preserve default layout/routing choices; set the optimization level through the selected immutable config file.
 2. In `benchpress/utilities/backends/flexible_backend.py`, pass `seed=int(os.environ["BENCHPRESS_BACKEND_SEED"])` to the `GenericBackendV2` superclass constructor. Keep `noise_info` unchanged. A NumPy global seed alone will not control its independently constructed `default_rng`.
 3. Add seed and configuration identifiers to the output metadata. Preserve the existing metrics and validation. Make missing seed variables fail clearly rather than silently restoring randomness.
 4. Sort collected node IDs in a pytest collection hook, then save the exact ordered selection. Reuse it for both revisions. This avoids filesystem-order differences in Feynman/QASMBench discovery.
+5. Add a `BENCHPRESS_CONFIG` environment override to `BenchpressConfig`'s filename selection, falling back to its upstream default only outside the controlled run. Each child uses an absolute path to an archived `opt-2.conf` or `opt-3.conf` before importing Benchpress. Each child also receives its own working directory, pytest cache, temporary directory, and output paths. Never edit a shared `default.conf` or share `skipfile.txt` between array elements.
+6. Run pytest with `--benchmark-disable --timeout-skip-list=0`; reject timing/profiling options in controlled jobs. The pinned fixture's disabled path calls the transpilation callable once. Disabling timing alone is insufficient if a timeout preflight is enabled, because that would call it again. Add a quality export hook that captures `benchmark.extra_info` after the test call and writes `quality.json` with identity and validation status, including failure/skip outcomes. Do not rely on benchmark JSON or write timing statistics.
+7. In quality mode, bypass the QASM loader's `perf_counter()` calls and `qasm_load_time` field. Export only the agreed quality/input metadata. Pytest/LSF may still include incidental job durations in diagnostic logs; the collector does not use them as scientific metrics.
+
+The single-call behavior is verified in the pinned [pytest-benchmark fixture](https://github.com/1ucian0/pytest-benchmark/blob/e33f5934cb462e719b13b8d352ced107f575b4f7/src/pytest_benchmark/fixture.py). Test the exporter independently: disabling the benchmark fixture must preserve gate/depth metrics and native validation.
 
 Use these settings before importing Qiskit in every benchmark process:
 
@@ -136,23 +143,24 @@ export VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 export PYTHONHASHSEED=0
 export BENCHPRESS_BACKEND_SEED=424242
 export BENCHPRESS_TRANSPILE_SEED=0
+export BENCHPRESS_QUALITY_ONLY=1
 ```
 
-This defines the primary single-thread experiment. `QISKIT_NUM_PROCS=1` does **not** force the preset pipeline to use one SABRE trial: at this revision, the level-2 default layout and routing plugins explicitly use 20 trials. Keep those counts equal and record them. Direct `SabreSwap`/`SabreLayout` diagnostics must set trial counts explicitly. A later throughput experiment can use a fixed Rayon thread count, such as 4, and must be reported separately.
+This defines one CPU thread per benchmark process. Parallelism comes from independent LSF array elements. `QISKIT_NUM_PROCS=1` does **not** force the preset pipeline to use one SABRE trial: at this revision, levels 2 and 3 use 20 trials, with default SABRE layout iteration limits of 2 and 4 respectively. Record these differences and preserve them for both revisions. Direct `SabreSwap`/`SabreLayout` diagnostics must set trial counts explicitly. Multithreading within a benchmark remains a separate experiment.
 
-Copy and hash the exact `default.conf` for every configuration. Benchpress reads this file relative to its package; do not assume it has a general `--config` CLI override. Keep the default config for the primary run. Change the Qiskit optimization level to 3 only for a separate follow-up, and restore the original before changing configurations again.
+Create `opt-2.conf` and `opt-3.conf` from the pinned default, changing only `[qiskit].optimization_level`. Hash and archive both. Upstream Benchpress has no assumed general `--config` CLI flag; the planned `BENCHPRESS_CONFIG` adapter supplies the explicit path. Compare candidate versus baseline within each level, and report the quality effects of level 3 separately. A baseline-level-2 versus candidate-level-3 comparison would mix two interventions.
 
 Use the packaged fake Torino backend without refreshing it from a service. Save hashes of its packaged configuration/properties and the runtime package version. For abstract targets, save a canonical fingerprint of qubit count, sorted edges, operation names, gate errors, and durations. Confirm target fingerprints match between revisions. These runs need no hardware jobs or IBM account credentials.
 
-## 5. Circuits, seeds, and staged workload
+## 5. Circuits, seeds, and workload
 
 ### 5.1 Circuit inventory
 
-A **case** is one circuit on one target at one optimization level and thread configuration. Running the same circuit on four abstract topologies creates four cases. Seeds and timing repetitions do not create new circuit cases.
+A **panel entry** is one circuit on one target. A **case** adds one optimization level and thread configuration. The 50-entry panel becomes **100 cases** when levels 2 and 3 are enabled. The inventory table below counts entries (equivalently, cases at one level); seeds do not create new cases.
 
-The following inventory is the **available corpus for selection**, not the default execution scope. The screening profile selects up to 50 cases from it; the optional full profile attempts the eligible corpus. Counts were checked against the pinned Benchpress source tree and HamLib input data; they are source inventory counts, not a claim that pytest has collected or successfully executed them yet.
+The following inventory is the **available corpus for selection**, not the default execution scope. The quality profile selects the fixed 50 entries from it; the optional full profile attempts the eligible corpus. Counts were checked against the pinned Benchpress source tree and HamLib input data; they are source inventory counts, not a claim that pytest has collected or successfully executed them yet.
 
-| Suite / input | Circuits | Targets per circuit | Cases before exclusions | What it exercises |
+| Suite / input | Circuits | Targets per circuit | Entries before exclusions | What it exercises |
 | --- | ---: | ---: | ---: | --- |
 | Device Summit: `device_transpile/test_summit.py` | 9 | Fake Torino | 9 | Large structured circuits, random two-qubit interactions, and simplification controls. |
 | Device Feynman: all `.qasm` files directly under `benchpress/qasm/feynman/` | 53 | Fake Torino | 53 | Reversible arithmetic, multi-controlled gates, QFT, error correction, and other algorithmic circuits. |
@@ -161,11 +169,11 @@ The following inventory is the **available corpus for selection**, not the defau
 | Abstract QASMBench medium: `benchpress/qasm/qasmbench-medium/` | 23 | Four topologies | 92 | Arithmetic, QFT, quantum memory, classifiers, and state preparation. |
 | Abstract QASMBench large: `benchpress/qasm/qasmbench-large/` | 58 | Four topologies | 232 | Larger instances of the same families plus Quantum Volume, QUGAN, and UCCSD. |
 | Abstract HamLib: the same 100 representative Hamiltonians | 100 | Four topologies | 400 | How Hamiltonian circuits respond to different connectivity constraints. |
-| **Total** | | | **1,054** | **162 device cases + 892 abstract cases.** |
+| **Total** | | | **1,054** | **162 device entries + 892 abstract entries.** |
 
-The four abstract topologies are `linear`, `square`, `heavy-hex`, and `all-to-all`; each uses the default `['id', 'sx', 'x', 'rz', 'cz']` basis. The primary run uses optimization level 2 and the single-thread configuration from section 4. Construction and manipulation benchmarks are outside this inventory. Level 3 and multithreading each add a separate experiment and are excluded from the counts below.
+The four abstract topologies are `linear`, `square`, `heavy-hex`, and `all-to-all`; each uses the default `['id', 'sx', 'x', 'rz', 'cz']` basis. Run both optimization levels 2 and 3 with the single-thread settings from section 4. Construction/manipulation and within-process multithreading are outside this experiment. The 1,054-entry full inventory expands to 2,108 level-specific cases.
 
-The proposed 50-case panel includes these nine Summit tests, subject to the pilot budget adjustment below:
+The fixed 50-entry panel includes these nine Summit tests:
 
 | Circuit / test suffix | Input details | Why include it |
 | --- | --- | --- |
@@ -179,7 +187,7 @@ The proposed 50-case panel includes these nine Summit tests, subject to the pilo
 | `test_BVlike_simplification_transpile` | 100-qubit BV-like circuit | Optimization control expected to simplify strongly. |
 | `test_clifford_100_transpile` | `clifford_100_12345.qasm` | Clifford synthesis and routing. |
 
-The dataset suites provide the following inputs. Screening uses the selections in section 5.2; only the optional full profile attempts every eligible input:
+The dataset suites provide the following inputs. The quality run uses the selections in section 5.2; only the optional full profile attempts every eligible input:
 
 - **Feynman:** includes `adder`, `adder_8`, `bigadder`, `gf2^4_mult` through larger finite-field multipliers, `barenco_tof_*`, `tof_*`, `qcla_*`, `grover_5`, `qft`, `qft_4`, `qec`, and `teleport`. Each `.qasm` filename defines an input.
 - **QASMBench small:** examples include `adder_n4`, `adder_n10`, `qft_n4`, `qaoa_n3`, `qaoa_n6`, `hhl_n7`, `ising_n10`, and `vqe_uccsd_n4/n6/n8`.
@@ -187,13 +195,13 @@ The dataset suites provide the following inputs. Screening uses the selections i
 - **QASMBench large:** includes QV inputs in `QV_n32/32.qasm` and `QV_n100/100.qasm`, `adder_n28/n64/n118/n433`, `qft_n29/n63/n160/n320`, `ising_n34/n42/n66/n98/n420`, and larger BV, GHZ, classifier, QUGAN, and W-state instances. Expand the slash-separated names into separate inputs. Follow the loader's rule excluding filenames containing `transpiled`.
 - **HamLib:** 35 chemistry, 35 condensed-matter, 15 binary-optimization, and 15 discrete-optimization records. These include molecular electronic/vibrational problems, transverse-field Ising and Heisenberg models, Bose/Fermi Hubbard models, graph-coloring, SAT, and travelling-salesperson instances. The 100 records span **2–930 input qubits**. If the resolved Fake Torino has 133 qubits, 81 HamLib records fit and 19 are expected capacity skips in the device suite. Abstract targets are sized to the circuit and have no such 133-qubit limit, although large cases may exceed the resource budget.
 
-The input rules are defined by the pinned [Feynman test](https://github.com/Qiskit/benchpress/blob/b695f30e83a32bac05b9b4d8e98d37ba9aae5236/benchpress/qiskit_gym/device_transpile/test_feynman.py), [QASMBench parameterization](https://github.com/Qiskit/benchpress/blob/b695f30e83a32bac05b9b4d8e98d37ba9aae5236/benchpress/workouts/abstract_transpile/qasmbench.py), and [HamLib data](https://github.com/Qiskit/benchpress/blob/b695f30e83a32bac05b9b4d8e98d37ba9aae5236/benchpress/hamiltonian/hamlib/100_representative.json). The exact executed membership will be saved in `results/cases.jsonl`, including full pytest node IDs, source paths or Hamiltonian record identities, input hashes, topology, and exclusion reasons. Reconcile the 1,054 expected cases with collection before running; investigate discrepancies instead of silently changing the denominator.
+The input rules are defined by the pinned [Feynman test](https://github.com/Qiskit/benchpress/blob/b695f30e83a32bac05b9b4d8e98d37ba9aae5236/benchpress/qiskit_gym/device_transpile/test_feynman.py), [QASMBench parameterization](https://github.com/Qiskit/benchpress/blob/b695f30e83a32bac05b9b4d8e98d37ba9aae5236/benchpress/workouts/abstract_transpile/qasmbench.py), and [HamLib data](https://github.com/Qiskit/benchpress/blob/b695f30e83a32bac05b9b4d8e98d37ba9aae5236/benchpress/hamiltonian/hamlib/100_representative.json). The exact executed membership will be saved in `results/cases.jsonl`, including full pytest node IDs, source paths or Hamiltonian record identities, input hashes, topology, and exclusion reasons. Reconcile the 1,054 expected entries with collection at each level before running; investigate discrepancies instead of silently changing the denominator.
 
-### 5.2 Recommended 50-case panel and 10-case pilot
+### 5.2 Fixed 50-entry panel
 
 Select the panel before examining candidate improvements. The proposed allocation is:
 
-| Family | Selected inputs | Targets | Cases |
+| Family | Selected inputs | Targets | Entries |
 | --- | --- | --- | ---: |
 | Device Summit | The nine tests listed above | Fake Torino | 9 |
 | Device Feynman | `adder_8`, `barenco_tof_5`, `gf2^8_mult`, `qft_4`, `rc_adder_6` | Fake Torino | 5 |
@@ -215,272 +223,178 @@ At the pinned dataset revision, that rule selects:
 | Binary optimization | `graph-complete_bipart` | `/complbipart-n-10_a-5_b-5,` | 10 |
 | Discrete optimization | `TSP_Ncity-5` | `/tsp_prob-ts225_Ncity-5_enc-unary,` | 25 |
 
-Pilot exactly these **10 cases on both revisions**, with seed 0 and one process repetition: the Summit SU2-89 and QV-100 cases; Feynman `gf2^8_mult`; the device chemistry HamLib case; small QASMBench `qaoa_n6` on `linear`; medium `qft_n18` on `square`; large `qft_n29` on `heavy-hex` and `swap_test_n41` on `linear`; abstract chemistry HamLib on `all-to-all`; and abstract condensed-matter HamLib on `heavy-hex`. This makes **20 pilot jobs** and covers every suite/size group and all four topologies. It does not pilot the full 1,054-case corpus.
+Freeze all 50 entries before execution, resolving exact pytest node IDs and input/configuration hashes. Run the same panel at both optimization levels and both revisions. Preserve unsupported inputs, failures, and resource-limit outcomes in coverage; do not shrink the panel based on observed execution speed or quality results.
 
-Use pilot elapsed times and input size/structure to estimate the unpiloted cases. Mark these extrapolations explicitly. Remove or defer expensive cases if the panel does not fit the time budget, using the slower revision's cost for each observed pair. Preserve at least one case from each row of the allocation and all four abstract topologies where feasible; favor retaining complete topology groups. Record omissions and their cost basis in the manifest. Freeze the final `N <= 50` cases before inspecting quality/speed differences. A timed-out or failing selected case remains visible as an outcome even when deferred. If the budget cannot cover the minimum diversity, report a partial pilot instead of claiming a representative screen.
+### 5.3 Seeds, optimization levels, and LSF task counts
 
-### 5.3 Seeds and repetitions per case
+| Quantity | Main quality comparison | Full comparison (optional) |
+| --- | --- | --- |
+| Panel entries | **50** | Eligible full corpus |
+| Optimization levels | **2 and 3** | 2 and 3 unless explicitly narrowed |
+| Transpiler seeds | **`0, 1, 2`** | `0, 1, 2, 3, 4` |
+| Processes per seed/revision/level | **1** | 1 |
+| Transpilation calls per process | **1** | 1 |
+| Invocations per panel entry | **12** | 20 |
+| LSF array elements per panel entry | **3** | 5 |
 
-| Quantity | Smoke / pilot | Screening (default) | Full comparison (optional) |
-| --- | --- | --- | --- |
-| Transpiler seeds | `0` | **`0, 1, 2` — three seeds per case** | `0, 1, 2, 3, 4` |
-| Process repetitions per seed and revision | 1 | **1**, indexed `0` | 3, indexed `0, 1, 2` |
-| Revisions | Baseline and candidate | Baseline and candidate | Baseline and candidate |
-| Minimum timed rounds per process | 3 | **3** | 3 |
-| Process jobs per selected case | 2 | **6 = 3 seeds × 1 repetition × 2 revisions** | 30 = 5 seeds × 3 repetitions × 2 revisions |
+One array element owns `(panel_entry, seed)` and executes baseline/candidate at both levels sequentially. Use a fixed archived order, such as `L2/baseline, L2/candidate, L3/baseline, L3/candidate`. Different elements run concurrently, initially capped at 16. Keep numerical-library/Rayon/Qiskit thread limits at one within each invocation.
 
-Every baseline/candidate pair uses the same transpiler seed, backend seed `424242`, and input circuit. Quantum Volume's input seed remains `12345`; it is not another seed sweep. Timed rounds within a process measure timing variability; they are not independent transpiler seeds or independent process starts. SABRE's internal trial budget remains unchanged and is distinct from these experiment seeds.
+For `N` panel entries, `L` levels, and `S` seeds, there are `NS` elements and `2NLS` invocations. The main run has **150 elements and 600 single-transpilation invocations**. An optional full run over all 1,054 inventory entries with five seeds has 5,270 elements / 21,080 invocations before eligibility exclusions; split it into site-supported array sizes while enforcing one campaign-wide concurrency cap.
 
-For `N` screening cases, expect **`6N` job outcomes** and at least **`18N` timed rounds if all jobs succeed**: 50 cases give **300 jobs and at least 900 timed rounds**, plus 20 separate pilot jobs. The full profile instead produces `30N` job outcomes and at least `90N` timed rounds if successful; scheduling all 1,054 inventory cases would require 31,620 jobs. Capacity skips and resource exclusions reduce measured totals. Calibration, timeout preflight, and the final result-producing invocation add calls beyond those minimum rounds. Preserve actual round/iteration counts. Smoke and pilot results are not reused as screening/full-run repetitions.
+Each revision pair uses the same transpiler seed, backend seed `424242`, and input. Quantum Volume's generation seed stays `12345`. There are no process repetitions or timed rounds in the quality campaign. Small correctness/reproducibility checks belong to build validation and do not add scientific rows to the main comparison.
 
-### 5.4 Validation and execution stages
+### 5.4 Execution stages
 
-First run each revision's own affected Qiskit tests using its release wheel and the test dependencies declared in its `pyproject.toml`: `test_sabre_swap`, `test_sabre_layout`, `test_preset_passmanagers`, `test_transpile_layout`, and compiler `test_transpiler`. Collect the tests from that revision in a directory that does not shadow the installed wheel. Recheck import paths during this step. Candidate-specific expected routes must not be imposed on the baseline.
+A single submission starts the LSF manager, which performs:
 
-Next collect the two Benchpress suites in both environments and compare selected node-ID sets. Separate expected skips, such as circuits exceeding device capacity, from failures. Establish the following tiers before inspecting comparative results:
+1. **Build and correctness validation:** build both pinned Linux release wheels and environments; run each revision's own affected Qiskit tests (`test_sabre_swap`, `test_sabre_layout`, `test_preset_passmanagers`, `test_transpile_layout`, compiler `test_transpiler`). Verify wheel imports and collect Benchpress at both levels. Resolve and freeze the requested panel.
+2. **Adapter smoke checks within validation:** SU2-89 and small `qaoa_n6`/linear on both revisions and levels: eight single-call invocations. Verify quality export, config selection, isolated directories, native validation, and a small semantic/reproducibility check. These are implementation checks, not a preliminary benchmark campaign.
+3. **Quality array:** submit all 150 main elements directly after validation, with at most 16 running concurrently. Account for every scheduled invocation, including failures and unstarted tasks.
+4. **Report:** after all elements settle, produce gate-count/depth comparisons per level, coverage, and level-3-versus-level-2 quality summaries.
 
-| Tier | Workload | Seeds / repetitions | Purpose |
-| --- | --- | --- | --- |
-| Smoke | Device `test_circSU2_89_transpile`; small abstract `qaoa_n6` on `linear` | Seed 0, one process each | Check compatibility, metrics, target identity, and the adapter. |
-| Pilot | The 10 cases specified in section 5.2 | Seed 0, one process per revision; 20 jobs | Estimate cost and detect compatibility/resource problems within a 30-minute sub-budget. |
-| Screening | Up to 50 cases from section 5.2, frozen after the cost pilot | Seeds 0–2, one process per revision/seed; up to 300 jobs | Obtain an initial quality/runtime comparison within the remaining three-hour budget. |
-| Focused follow-up | Promising cases, regressions, or timing differences near noise | Ten seeds for quality, or three processes for timing, as specified below | Confirm findings on selected cases with a separate budget. |
-| Full comparison | Eligible full corpus or a declared broader panel | Seeds 0–4, three processes per revision/seed | Optional broader validation after screening. |
-| Configuration follow-up | Level 3 or fixed multithreading on a declared subset | Explicitly recorded seed/process policy | Separate sensitivity experiment. |
+Treat `all-to-all` and cases where SABRE does not run as separate controls. Use the queue's eligible hosts without added CPU-count, CPU-model, or load selectors. Record hardware and affinity for provenance and verify build/runtime platform compatibility. Each element retains its common host and fixed thread settings. No pytest-xdist or parallel children inside one element are required.
 
-Treat `all-to-all` as a control and report it separately from constrained topologies. Screening should retain small, medium, and large circuit examples; archive reasons for every exclusion. Adjust the proposed panel using circuit family, qubit range, topology, and pilot cost, then freeze it before inspecting candidate-versus-baseline improvements. Do not select only winning circuits.
+### 5.5 Job limits
 
-Example smoke commands, **after** building the wheels and applying the patch:
+Keep the **three-hour campaign deadline**, beginning when the first quality worker starts, as a limit on cluster work. It includes later queue waits and compute; build/validation, initial queue wait, and final reporting are separate. Enforce **300 seconds per child**, a **25-minute internal element deadline**, and a **30-minute LSF execution limit**. These limits control resource use; they do not measure compilation performance or predict completion time.
 
-```bash
-cd "$RUN_ROOT/benchpress"
-"$BASE_PY" -m pytest --collect-only -q \
-  benchpress/qiskit_gym/device_transpile \
-  benchpress/qiskit_gym/abstract_transpile \
-  > "$RUN_ROOT/results/collected-baseline.txt"
+At the campaign deadline, cancel unfinished owned array jobs, confirm terminal states, and report partial coverage. Record unresolved scheduler queries or unconfirmed cancellation explicitly. The manager has a separate 24-hour execution limit. Sixteen workers reserve up to 16 physical cores and 128 GB at 8 GB each, across eligible hosts. Preserve Linux build artifacts for reuse. Do not provide a measured ETA or speedup from this experiment.
 
-"$BASE_PY" -m pytest \
-  benchpress/qiskit_gym/device_transpile/test_summit.py::TestWorkoutDeviceTranspile100Q::test_circSU2_89_transpile \
-  --benchmark-min-rounds=3 --benchmark-max-time=1 \
-  --benchmark-warmup=off --benchmark-save-data \
-  --benchmark-json="$RUN_ROOT/results/smoke-baseline-device.json" \
-  --junitxml="$RUN_ROOT/results/smoke-baseline-device.xml"
+### 5.6 Optional additional coverage
 
-"$BASE_PY" -m pytest \
-  benchpress/qiskit_gym/abstract_transpile/test_qasmbench.py::TestWorkoutAbstractQasmBenchSmall \
-  -k 'qaoa_n6 and linear' --benchmark-min-rounds=3 --benchmark-max-time=1 \
-  --benchmark-warmup=off --benchmark-save-data \
-  --benchmark-json="$RUN_ROOT/results/smoke-baseline-abstract.json" \
-  --junitxml="$RUN_ROOT/results/smoke-baseline-abstract.xml"
-```
-
-Repeat with `CAND_PY` and distinct `candidate` output names, including collection. Save stdout, stderr, command, and exit status for every invocation. The benchmark plugin still performs calibration and an additional result-producing invocation; disabling explicit warmup does not make this a cold-start measurement.
-
-For screening, use one process per revision/seed with at least three measured rounds; the optional full profile uses three process repetitions. Execute pairs serially on one quiet, plugged-in machine, alternating baseline/candidate order by case, seed, and repetition. Within each seed, traverse a deterministic order that interleaves suites and topologies before moving to the next seed, so a budget stop does not only cover the cheapest family. Keep the backend seed fixed while varying only the transpiler seed. Do not run revisions concurrently or use pytest-xdist for measured runs. Record OS, CPU architecture/model, RAM, available cores, power conditions, and all thread settings. Check fixed-seed quality repeatability with a small untimed smoke replay; do not add process repetitions to every screening case for that purpose.
-
-### 5.5 Runtime budget and profile settings
-
-**Target a 2–3 hour pilot plus screening session, with a three-hour wall budget.** This limits benchmarking time, not the number of cases guaranteed to finish. There is no measured ETA yet. Setup, two release builds, the affected Qiskit tests/smoke checks, and report generation are outside this budget. Keep the previous unmeasured allowances of 1–3 hours for cold setup/builds and 0.5–2 hours for tests/smoke; cached builds may be quicker. The reduced smoke selection has two cases, or four baseline/candidate jobs.
-
-Let `w` be the average **whole subprocess wall time** in seconds, including imports, collection, loading, target/pass-manager construction, preflight, calibration, timed rounds, validation, and serialization. Then, for serial execution:
-
-```text
-10-case pilot time = 2 × 10 × w = 20w
-screening time    = 2 × N × 3 seeds × 1 repetition × w = 6Nw
-full-profile time = 2 × N × 5 seeds × 3 repetitions × w = 30Nw
-total time        = setup + validation/smoke + pilot + selected profile + analysis
-```
-
-These scenarios illustrate the scale; **none is a benchmark result or a measured prediction for this machine**:
-
-| Average job wall time `w` | 10-case pilot | 50-case screening | Optional full profile, 1,054 cases |
-| --- | ---: | ---: | ---: |
-| 5 seconds | 1.7 minutes | 25 minutes | 43.9 hours / 1.8 days |
-| 30 seconds | 10 minutes | 2.5 hours | 263.5 hours / 11.0 days |
-| 120 seconds | 40 minutes; exceeds pilot sub-budget | 10 hours; reduce panel | 1,054 hours / 43.9 days |
-
-Use actual **elapsed job time**, not `stats.median`, to forecast the remaining schedule. Benchpress can load the 41 MB HamLib file during collection, and process startup is paid again for every node. The large cases will not cost the same as small ones. Sum per-case estimates, including expected skip and timeout costs, instead of extrapolating only from the small smoke circuits.
-
-Use a maximum 30-minute pilot sub-budget, counted inside the three-hour session. After the pilot, choose `N <= 50` such that the summed screening estimate plus a **25% scheduling reserve** fits the remaining time. For a uniform-cost illustration, `N <= floor((10800 - pilot_elapsed_s) / (1.25 × 6 × w))`, capped at 50. At 30 seconds/job and a 10-minute pilot, this gives at most 45 cases before accounting for topology-group selection. The reserve is a planning choice, not a confidence interval. Publish observed costs, extrapolations, selected count, and exclusions in `results/runtime_estimate.json`. Update remaining-time estimates during execution without silently changing the frozen selection.
-
-The runner must stop admitting new baseline/candidate pairs when the remaining stage/session budget cannot cover both job timeouts plus shutdown allowance. Finish an admitted pair within that reserved time. Enforce an outer deadline as well; if a process overruns, terminate its process group and preserve timeout/incomplete-pair status. Mark scheduled jobs that never start as `not_run` with reason `budget_exhausted`. Do not turn incomplete seed coverage into a complete screening result or start the full profile automatically. Budgets reset only for a separate, explicitly selected follow-up run.
-
-The following is the **proposed configuration contract for the future runner**, not an implemented CLI or an existing config file:
-
-```json
-{
-  "profile": "screening",
-  "candidate_case_limit": 50,
-  "pilot_case_count": 10,
-  "transpiler_seeds": [0, 1, 2],
-  "process_repetitions": 1,
-  "benchmark_min_rounds": 3,
-  "benchmark_max_time_s": 1,
-  "session_budget_s": 10800,
-  "pilot_budget_s": 1800,
-  "planning_reserve_fraction": 0.25,
-  "preflight_timeout_s": 60,
-  "job_timeout_s": 300,
-  "backend_seed": 424242
-}
-```
-
-### 5.6 Focused follow-up policy
-
-Keep the initial screening report intact. Use a separate run/profile and budget to confirm selected findings:
-
-- **Quality:** select up to ten cases with consistent improvement, material gate/depth regression, or seed-sensitive tradeoffs. Run a new paired experiment over seeds `0–9` with one process per revision/seed and at least three timed rounds: 20 jobs per case, including fresh executions of seeds `0–2`. Both improving and regressing cases remain eligible. Record the selection reason and do not pool this selected set into an unbiased whole-corpus average.
-- **Timing:** for changes near noise or the 5% review threshold, run seeds `0–2` with three process repetitions per revision/seed on the affected cases: 18 jobs per case. Compare process-level variation before claiming a small runtime change; within-process rounds alone do not measure startup/process variability.
-- **Correctness/timeouts:** investigate any new failure first, preserving the original outcome. Larger limits belong to a separate diagnostic configuration.
-- **Expansion:** use the optional full profile (five seeds, three process repetitions) only when broader evidence is needed. Level 3 and multithreading remain separate sensitivity experiments.
-
-Give each focused follow-up a declared budget, initially one hour, and apply the same pair/deadline policy. A ten-case quality follow-up has 200 jobs and would take about 100 minutes at 30 seconds/job, so it would require fewer cases or a separately chosen larger budget. Do not automatically append follow-up work to the three-hour screening session.
+The main report stands on its own. A separate quality follow-up may use ten seeds on explicitly selected cases; ten entries at both levels require 100 elements / 400 invocations. Preserve selection reasons and first-attempt outcomes. Do not combine an outcome-selected follow-up with the main-panel average. The full corpus remains optional and also uses one call per revision/level/seed.
 
 ## 6. Timeouts, coverage, and correctness limits
 
-The pinned [plugin fixture](https://github.com/1ucian0/pytest-benchmark/blob/e33f5934cb462e719b13b8d352ced107f575b4f7/src/pytest_benchmark/fixture.py) implements `--timeout-skip-list` as a **preflight invocation** in a subprocess. It does not cap the later calibration, measured rounds, or final invocation. Likewise, `--benchmark-max-time=1` is a timing budget used to choose rounds, not a one-second hard limit on a test.
+Launch one selected node ID per pytest subprocess with `--benchmark-disable --timeout-skip-list=0`. Use an external process-group watchdog for the whole child; a stuck Rust call must not escape the 300-second limit. Avoid a plugin timeout preflight because it performs an extra transpilation. Keep the limits identical for both revisions and levels, and preserve an explicit timeout/missing record when no quality JSON or XML can be produced. An optional full session may use a 900-second child limit with correspondingly larger element limits, recorded before submission.
 
-For the pilot and screening run, implement a small external runner that launches one selected node ID per pytest subprocess. Use **60 seconds for the plugin's preflight and 300 seconds for the entire node process**, equally for both revisions, plus the stage/session deadlines from section 5.5. The optional full profile can use 120/900 seconds, recorded separately. Fix limits before measuring; changes create a new configuration rather than overwriting earlier outcomes. Use a process-group watchdog so a stuck Rust call or subprocess cannot evade the cap. Archive an explicit timeout record if the child terminates before writing JSON/XML. One process per node adds startup cost, which stays outside `pm.run` timing.
+The pinned fork still consults `skipfile.txt` in the working directory with timing disabled. Start every child in a fresh private directory without that file. Any generated skipfile is a diagnostic artifact; it must never suppress another revision or seed. Retain failures and timeouts even if a later explicit retry succeeds.
 
-The fork writes `skipfile.txt` in the current directory and consults it on later invocations, even without the timeout option. Its implementation reports matching entries as failures. Archive and move any generated skipfile after each child, and require an empty starting state for the next child. Never let a baseline timeout silently determine candidate coverage or vice versa. Preserve the timeout/failure as an outcome even if a later investigation succeeds. A frozen resource-exclusion manifest is separate from this automatic skipfile.
+Keep Benchpress's gate/connectivity validation. Add small semantic checks during build validation, accounting for initial/final layouts, ancillas, and global phase. Do not construct dense operators for 89/100-qubit circuits. Measurement/control-flow examples need appropriate dedicated checks.
 
-Keep the normal Benchpress gate/connectivity validation. Add a small, untimed semantic check on suitable unitary circuits, accounting for initial/final layouts, ancillas, and global phase. Do not build dense operators for 89/100-qubit benchmarks. Treat measurement/control-flow examples separately; their correctness and recursive metrics need dedicated handling.
-
-For attribution, run an untimed pass-manager callback on representative inputs to record whether `SabreLayout` or `SabreSwap` actually executes. A valid VF2 layout can avoid SABRE. Report unchanged no-routing cases as controls. If routing-only diagnostics are needed, use a separate fixed-layout `SabreSwap` experiment with an explicit seed/trial budget, followed by the same two-qubit synthesis on both revisions. Keep callback instrumentation and diagnostic pass changes out of the primary timing run.
+For attribution, optional diagnostic replays can record whether `SabreLayout` or `SabreSwap` executes; a valid VF2 layout can avoid SABRE. Keep diagnostic results separate from the main quality rows and retain the original preset configuration in the campaign.
 
 ## 7. Analysis and decision rules
 
-Join by **profile/stage + node ID + configuration/target fingerprint + transpiler seed + repetition**. Do not join by list position, package version, or short test name. Check that both records passed before calculating a performance ratio; keep unpaired errors, skips, timeouts, budget-exhausted jobs, and missing results in a separate coverage table.
-
-Extract these fields into a flat CSV:
+Join baseline/candidate by **profile/stage + node ID + optimization level + input/configuration/target fingerprint + seed + host/allocation + attempt**. Do not join by list position, package version, or short name. Calculate quality differences only when both records pass validation. Keep unpaired failures, skips, timeouts, cancellations, and missing artifacts in coverage.
 
 | Field | Source / interpretation |
 | --- | --- |
-| Full identity | Qiskit commit, wheel/extension hash, Benchpress and plugin commits, patch hash, dependency lock hash, target/config hash, node ID, seeds, repetition |
-| Runtime | `benchmarks[].stats.median`, plus mean, spread, rounds, iterations, and raw timing data |
-| Quality | `benchmarks[].extra_info.output_gate_count_2q` and `output_depth_2q` |
-| Context | Native two-qubit gate name, input/output width, operation histogram, topology, family, optimization level, thread/trial settings |
-| Outcome | Passed, skipped, failed, timeout, or missing artifact; preserve the reason and process exit status |
+| Identity | Qiskit/harness/Benchpress/plugin hashes, wheel/extension hash, patch/lock/input/config/target hashes, node ID, seed |
+| Quality | `quality.json` fields `extra_info.output_gate_count_2q` and `output_depth_2q` |
+| Context | Native two-qubit gate name, input/output width, operation histogram, topology, family, level, thread/trial settings |
+| Outcome | Passed, skipped, failed, timeout, cancelled, not run, or missing artifact, with reason |
 
-For any positive baseline metric, report `100 * (candidate / baseline - 1)`; negative means an improvement for all three primary metrics. Also report absolute gate/depth differences. When the baseline is zero, use the absolute difference and a separate zero-baseline category; never divide by zero or discard those cases silently.
+For positive baseline gate/depth metrics, report `100 * (candidate / baseline - 1)`; negative means an improvement. Also report absolute differences. For a zero baseline use absolute differences and a separate category; do not divide by zero or discard the row.
 
-For screening, use each process's median timed round as the timing observation for that case/revision/seed. For profiles with multiple process repetitions, first take the median across their process-level observations. Summarize paired seed results per circuit before computing aggregate statistics, so repetitions and seeds do not masquerade as independent circuits. Report geometric-mean ratios for positive metrics, medians, win/tie/loss counts, and worst regressions, split by topology and circuit family. Use confidence intervals that resample whole circuit groups if reporting uncertainty. Screening has only three seeds and one process repetition; label its timing findings preliminary and confirm small changes with the focused timing follow-up. Do not hide quality regressions behind one combined score or let all-to-all controls dominate the constrained-topology conclusion.
+Summarize the three paired seeds per case before aggregating across cases. Report medians, geometric-mean ratios for positive metrics, win/tie/loss counts, and the largest regressions, separately by level, topology, and circuit family. Treat seeds as repeated observations of a circuit, not independent circuits. If reporting uncertainty, resample whole circuit groups and state the limited panel/seed coverage. Compare level 3 versus level 2 within each Qiskit revision on the common complete panel.
 
-Agree on these initial review rules before running:
+Review rules:
 
-- No new correctness failures. Any new timeout, crash, or missing benchmark is investigated and reported.
-- Flag runtime slowdowns above 5% for repeat confirmation; treat this as a review threshold, not a claim of statistical significance.
-- List every gate-count/depth regression, highlighting increases above 5% and giving absolute counts so small-circuit percentages remain interpretable.
-- Claim an overall quality improvement only when the paired summaries support it and the compilation cost is stated. A gate-count win with a depth loss, or better quality with slower compilation, is a tradeoff to report explicitly.
-
-The final report should contain a coverage table, aggregate results by family/topology, a per-case CSV, the largest improvements/regressions, and runtime-versus-quality scatter plots. Separate scientific findings from compatibility failures or limits on the sampled workload.
+- Investigate every new correctness failure, crash, timeout, or missing result.
+- List every gate-count/depth regression; highlight increases above 5% with absolute counts so small-circuit percentages remain interpretable.
+- Report gate-count/depth tradeoffs explicitly. An overall quality claim must be supported by both coverage and paired summaries.
+- Keep all-to-all and no-routing controls visible separately. Do not make compilation-time or hardware-speedup claims.
 
 ## 8. Output format and artifacts
 
-Deliver both a human-readable report and machine-readable data. All examples below specify future output paths; these results do not exist yet. Use a distinct `RUN_ROOT` for every profile/run, such as `2026-10-14-screening` and a later `2026-10-15-followup-quality`, to preserve manifests and earlier results.
+Use a fresh shared results directory for every campaign. All paths below describe future artifacts.
 
 ```text
-design/
-  benchpress_comparison_results.md        # Final report and links to retained artifacts
-.benchpress-work/2026-10-14-screening/
+<results-root>/
   build-requirements.lock
   shared-requirements.lock
   baseline.freeze.txt
-  wheels/{baseline,candidate}/            # The two locally built Qiskit wheels
+  wheels/{baseline,candidate}/
   results/
-    manifest.json                        # Run identity, versions, machine, flags, hashes
-    profile.json                         # Seeds, repetitions, budgets, timeout policy
-    cases.jsonl                          # Complete inventory, selected cases, exclusions
-    runtime_estimate.json                 # Pilot-based forecast and its assumptions
+    manifest.json
+    profile.json
+    panel.jsonl
+    cases.jsonl
     benchpress-reproducibility.patch
-    configs/                             # Exact config and target fingerprints/snapshots
+    configs/{opt-2,opt-3}.conf
     build-{baseline,candidate}.log
-    validation/                          # Qiskit tests and small semantic-check results
-    raw/<stage>/<case-id>/<revision>/seed-<s>/repeat-<r>/
-      run.json                           # Identity, status, timestamps, wall time, exit code
-      benchmark.json                     # Native pytest-benchmark JSON, if produced
-      junit.xml                          # Pytest outcomes and failure details, if produced
+    validation/
+    raw/<stage>/<panel-id>/opt-<level>/seed-<s>/attempt-<a>/<revision>/
+      run.json
+      quality.json
+      junit.xml
       stdout.log
       stderr.log
-      skipfile.txt                       # Archived only if the plugin generated one
-    tables/
-      runs.csv                           # One row for every scheduled process job
-      paired_seeds.csv                   # One row per case/seed after repetition reduction
-      cases.csv                          # One row per case, across the profile's seeds
-      coverage.csv                       # Inventory, exclusions, all outcomes by revision
-      regressions.csv                    # Quality/runtime regressions and investigation flags
-    summary.json                         # Aggregate counts, metrics, uncertainty, caveats
-    plots/
-      runtime_vs_gate_count.{svg,png}
-      runtime_vs_depth.{svg,png}
-      quality_by_topology.{svg,png}
-    circuits/                            # Optional input/output QPY for investigated cases
-    checksums.sha256                     # Integrity hashes for the completed artifact bundle
+    tables/runs.csv
+    tables/paired_seeds.csv
+    tables/cases.csv
+    tables/coverage.csv
+    tables/regressions.csv
+    tables/levels.csv
+    summary.json
+    report.md
+    plots/opt-2/*.{svg,png}
+    plots/opt-3/*.{svg,png}
+    plots/levels/*.{svg,png}
+    circuits/                            # Optional diagnostic QPY and layout metadata
+    checksums.sha256
+<results-root>.lsf/                       # Scheduler ledger, logs, outcomes, diagnostics
 ```
 
-`stage` is `smoke`, `pilot`, `screening`, `followup-quality`, `followup-timing`, or `full`. The profile and stage determine seed/repetition expectations. `revision` is `baseline` or `candidate`. Use a filesystem-safe `case-id` derived from the full node ID plus input and configuration hashes, with its mapping retained in `cases.jsonl`; raw Hamiltonian node IDs can contain slashes and other unsuitable filename characters. Keep files from different seeds, repetitions, and revisions separate.
-
-The manual smoke commands in section 5 initially write flat `smoke-*.json/xml` files under `results/`. Retain those bootstrap artifacts; the implemented runner uses the structured `raw/` layout above.
+Stages are `smoke`, `quality`, `followup-quality`, and `full`. Use filesystem-safe hashed panel/case IDs with mappings in the manifests. Keep levels, revisions, seeds, and attempts in distinct paths. Only the final collector writes aggregate tables.
 
 ### 8.1 Raw data contract
 
-- **`manifest.json`:** schema version, run ID, profile, both Qiskit SHAs, wheel/extension hashes, Benchpress/plugin SHAs, reproducibility-patch hash, dependency locks, CPU/OS/RAM information, compiler/Python versions, selected seeds, repetition/round policy, thread/trial settings, timeouts, stage/session budgets, and the ordered job schedule. Archive the effective configuration in `profile.json`, including any pilot-based reduction in selected cases.
-- **`cases.jsonl`:** one JSON object per inventory case, including `case_id`, full `node_id`, suite/family, input path or full Hamiltonian record identity, input hash, input qubits, target/topology, config/target hashes, selection status, and any exclusion reason. Preserve dataset membership even when it is not executed.
-- **`run.json`:** one record per job with case/revision/seed/repetition, exact command and relevant environment, UTC timestamps, `elapsed_wall_s`, exit status, outcome, failure/skip reason, and artifact paths. The controller writes this even when the child crashes or times out before producing benchmark JSON/XML. Include `not_run` for a scheduled job that never started; missing data must not appear as a pass.
-- **`benchmark.json`:** retain the original benchmark statistics, raw timing data from `--benchmark-save-data`, and `extra_info` quality metrics. Do not replace it with only aggregate numbers. Add provenance in a namespaced metadata object or the accompanying `run.json`.
+- **`manifest.json` / `profile.json`:** schema version, run/profile identity, explicit Qiskit and harness SHAs, Benchpress/plugin/patch/lock/input/config hashes, wheel/extension provenance, seed list, level list, single-call execution mode, thread/trial settings, resource limits, and immutable schedule.
+- **`panel.jsonl` / `cases.jsonl`:** full inventory, exact node IDs, circuit/HamLib identities, input hashes/qubits, topology/target/config fingerprints, selection status, and exclusion reasons. Panel entries expand to one case per level.
+- **`run.json`:** one scheduled invocation's identity, exact command/relevant environment, LSF host/job/index/attempt, exit status, reason, and artifact paths. UTC start/end timestamps may support job recovery and timeout handling; no elapsed-performance field is required. The controller synthesizes records for killed or unstarted jobs.
+- **`quality.json`:** adapter-produced quality result with schema version, full identity, execution mode `quality`, single-call evidence, validation status, and the input/output quality fields from `benchmark.extra_info`. No benchmark statistics or QASM load timing. Preserve partial metadata on failures; mark it ineligible for successful-pair aggregation.
+- **`junit.xml` / logs:** native test failure diagnostics. Incidental pytest/LSF duration fields stay diagnostic and are not extracted into scientific tables.
 
-Use UTF-8, explicit schema versions in JSON/JSONL, seconds for timing, integer gate/depth counts, JSON `null` for unavailable values, and empty CSV cells for unavailable values. Preserve the reason in a separate column. A zero gate count is valid data; it is not a missing value.
+Use UTF-8, explicit schema versions, integer counts, JSON `null` and empty CSV cells for unavailable metrics, and a separate reason field. Zero gates/depth are valid values.
 
 ### 8.2 Comparison tables and report
 
-`runs.csv` contains one row per scheduled job, including failures and timeouts. Its core columns are:
+`runs.csv` contains every scheduled first-attempt invocation, including failures and timeouts:
 
 ```csv
-run_id,profile,stage,case_id,node_id,suite,topology,revision,qiskit_sha,config_hash,target_hash,seed,repetition,status,reason,elapsed_wall_s,median_s,mean_s,stddev_s,rounds,iterations,input_qubits,output_qubits,native_2q_gate,gate_count_2q,depth_2q,raw_artifact_dir
+run_id,profile,stage,panel_id,case_id,node_id,suite,topology,optimization_level,lsf_job_id,array_index,host,attempt,revision,qiskit_sha,config_hash,target_hash,seed,status,reason,input_qubits,output_qubits,native_2q_gate,gate_count_2q,depth_2q,raw_artifact_dir
 ```
 
-`paired_seeds.csv` reduces the configured process repetitions for each revision (one for screening, three for the full/timing profiles), then joins baseline and candidate for the same profile/stage/case/seed. It records the number of expected and completed repetitions, baseline/candidate runtime and quality, ratios, percentage changes, absolute gate/depth changes, and pairing/instability flags. Its core comparison columns are:
+`paired_seeds.csv` has one row per case/seed with paired status and quality changes:
 
 ```csv
-profile,stage,case_id,seed,pair_status,expected_repetitions,baseline_repetitions,candidate_repetitions,baseline_median_s,candidate_median_s,runtime_change_pct,baseline_gate_count_2q,candidate_gate_count_2q,gate_count_change,gate_count_change_pct,baseline_depth_2q,candidate_depth_2q,depth_change,depth_change_pct
+profile,stage,panel_id,case_id,optimization_level,seed,pair_status,baseline_gate_count_2q,candidate_gate_count_2q,gate_count_change,gate_count_change_pct,baseline_depth_2q,candidate_depth_2q,depth_change,depth_change_pct
 ```
 
-Require all configured process repetitions on both revisions for a complete seed pair: one each for screening and three each for the full profile. Where a fixed seed is repeated, flag any count/depth discrepancy rather than silently averaging it away. Keep incomplete pairs with unavailable comparison values. A case is complete only when all its configured seeds are paired; retain partial-case findings separately from complete-case aggregates.
+A complete pair has one passing result from each revision in the same element attempt. A complete case has all configured seeds paired. Retain incomplete cases separately; cross-level comparisons require both levels complete. `cases.csv` summarizes seeds; `levels.csv` compares L3/L2 quality within each revision.
 
-| Profile / stage | `runs.csv` rows | `paired_seeds.csv` rows | `cases.csv` rows |
-| --- | ---: | ---: | ---: |
-| Pilot, 10 cases | 20 | 10 | 10 |
-| Screening, `N` cases | **`6N`** | **`3N`** | **`N`** |
-| Screening, all 50 proposed cases | **300** | **150** | **50** |
-| Full profile, `N` cases | `30N` | `5N` | `N` |
-| Quality follow-up, `K` cases | `20K` | `10K` | `K` |
-| Timing follow-up, `K` cases | `18K` | `3K` | `K` |
+| Profile, levels 2 and 3 | LSF elements | Invocation rows | Paired-seed rows | Case rows |
+| --- | ---: | ---: | ---: | ---: |
+| Main quality, 50 entries / 3 seeds | **150** | **600** | **300** | **100** |
+| Main quality, `N` entries / 3 seeds | `3N` | `12N` | `6N` | `2N` |
+| Full, `N` entries / 5 seeds | `5N` | `20N` | `10N` | `2N` |
 
-These counts include explicit `not_run`/incomplete outcomes for scheduled work after a budget stop. Cases excluded before scheduling remain in `cases.jsonl` and `coverage.csv`, outside the selected `N`. Smoke/pilot/follow-up tables remain separately identified; they do not increase the screening denominator. Tag `cases.csv` with profile/stage, expected/paired seed counts, and `complete`/`partial` status.
+Preserve canonical first-attempt rows and separate retry history. Scheduled but unstarted invocations count as `not_run`; exclusions before scheduling remain outside the selected denominator. Build smoke checks and optional follow-ups do not increase main-run counts.
 
-The Markdown report will contain: scope and exact corpus size; seeds/repetitions and hardware; setup and measured elapsed times; passed/skipped/failed/timeout/not-run coverage; runtime, gate-count, and depth comparisons by suite/topology; win/tie/loss counts; the largest regressions and improvements; scatter plots; and a conclusion limited to completed measurements. Each notable case links to its comparison row and raw artifacts. Provide SVG plots for inspection/export and PNG copies for embedding.
+The Markdown report includes exact scope/seeds/levels, provenance, coverage, gate-count/depth comparisons by suite/topology, wins/ties/losses, largest changes, and links to raw artifacts. Provide baseline-versus-candidate gate/depth plots and quality-by-topology plots as SVG and PNG. Include no compilation-runtime tables, timing plots, or runtime forecast artifacts.
 
-Do not save every large transpiled circuit by default. For cases selected for semantic checks or regression investigation, save input/output `.qpy` files plus layout metadata in an untimed replay, tagged with revision and seed. Identify these as replay artifacts and verify their count/depth matches the measured result. The pinned inputs, hashes, configuration, and seeds remain the reproduction source for every other case.
+Save QPY only for explicitly investigated cases, retaining layout metadata and replay identity. Verify replay metrics match the original quality result. Publish the final scientific summary to `design/benchpress_comparison_results.md` only in a later explicit publication step.
 
-## 9. Execution deliverables and completion checklist
+## 9. Implementation deliverables and completion checklist
 
-Implement the following in a later execution task; this planning change creates only this Markdown file:
+Implemented entry points (see the [usage guide](../tools/benchpress/README.md) for submission and local checks):
 
-- `tools/benchpress/prepare.py`: verify pinned revisions, build/install isolated wheels, freeze dependencies, apply the shared reproducibility patch, and record provenance.
-- `tools/benchpress/run.py`: support the proposed `screening`, focused-follow-up, and optional `full` profiles; select/freeze the panel, execute the cost pilot, enforce pair/stage/session budgets, run the seed/repetition matrix serially, manage watchdogs/skipfiles, and save JSON, XML, logs, and missing-result records. Default to the screening configuration; do not launch the full corpus implicitly.
-- `tools/benchpress/compare.py`: validate pair identity and profile-specific row/seed/repetition expectations, extract quality and timing fields, retain partial results, produce CSV/plots, and render the comparison report.
-- `design/benchpress_comparison_results.md`: measured conclusions, reproduction commands, artifact locations, and unresolved limitations.
+- `tools/benchpress/prepare.py`: immutable inputs, release builds, dependency locks, validation, and provenance.
+- `tools/benchpress/adapter.py`: deterministic configuration/seeds, single-call mode, quality JSON exporter, and metadata.
+- `tools/benchpress/lsf/`: launcher, manager, scheduler, ledger, worker context, and status/stop/resume controls based on the supplied reference.
+- `tools/benchpress/run.py`: isolated child execution, watchdogs, and raw outcomes for each element.
+- `tools/benchpress/compare.py`: quality pairing, coverage, CSV/JSON/plots, and report.
 
-Keep bulky wheels, checkouts, logs, and raw results under the run directory, with an intentional local ignore rule before execution. Do not overwrite the developer's existing `.gitignore` edits. Preserve all raw artifacts even when only the report and small scripts are committed.
+Preserve existing `.gitignore` edits. Keep bulky wheels/checkouts/raw data in the run directory with an intentional ignore rule before execution.
 
-- [ ] Both local release wheels and their exact source hashes are verified.
-- [ ] Dependencies, Benchpress, plugin, patch, input corpus, config, and targets are pinned and archived.
-- [ ] Affected Qiskit tests and both Benchpress smoke runs succeed, or blockers are documented.
-- [ ] Fixed-seed quality repeatability is verified; node IDs and eligible corpus are frozen.
-- [ ] The 10-case pilot produces an archived ETA and a frozen panel that fits the remaining screening budget with reserve.
-- [ ] The screening profile uses three seeds, one process repetition, and at least three timed rounds; follow-ups/full runs are separately identified.
-- [ ] Budget exhaustion stops new pairs and produces explicit partial/not-run outcomes without silently expanding the run.
-- [ ] Paired single-thread runs finish with complete status accounting and no shared skipfile contamination.
-- [ ] Analysis reports final native-gate count, two-qubit depth, runtime, coverage, and regressions.
-- [ ] Raw job records, comparison tables, report, plots, and provenance are retained with reconciled row counts.
-- [ ] Results support a bounded conclusion about this SABRE commit; unmeasured workloads and optional follow-ups remain explicit.
+- [ ] Both Qiskit source hashes and the separate harness SHA are verified; Linux wheel imports resolve correctly.
+- [ ] Dependencies, adapter, data, configurations, and targets are pinned and archived.
+- [ ] Affected tests, adapter smoke checks, and small semantic/reproducibility checks pass.
+- [ ] The same fixed 50-entry panel runs at both levels with seeds 0–2.
+- [ ] Each successful invocation calls the transpilation callable exactly once and exports quality without benchmark timing.
+- [ ] One main array follows build/validation directly; concurrency and deadline handling are verified.
+- [ ] No shared output/config/skipfile contamination; all scheduled outcomes are accounted for.
+- [ ] Reports contain gate count, two-qubit depth, coverage, and quality regressions with reconciled row counts.
+- [ ] All raw quality/provenance artifacts and first-attempt failures are preserved.

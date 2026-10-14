@@ -1,0 +1,1 @@
+{"schema_version":1,"profile":"full","panel_size":null,"opt_levels":[2,3],"seeds":[0,1,2,3,4],"backend_seed":424242,"max_parallel":16,"run_timeout_s":900,"element_timeout_s":3900,"task_wall":"1:10","campaign_limit_min":null}

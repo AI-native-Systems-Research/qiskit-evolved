@@ -1,0 +1,4 @@
+pytest>=8,<9
+pytest-benchmark @ git+https://github.com/1ucian0/pytest-benchmark.git@e33f5934cb462e719b13b8d352ced107f575b4f7
+wrapt_timeout_decorator
+matplotlib>=3.9

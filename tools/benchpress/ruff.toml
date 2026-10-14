@@ -1,0 +1,9 @@
+extend = "../../pyproject.toml"
+
+[lint]
+# Match the repository's PLR0913 exception for orchestration functions.
+extend-ignore = ["PLR0917"]
+
+[lint.extend-per-file-ignores]
+"tests/*.py" = ["S101", "S607"]
+"prepare.py" = ["S607"]
