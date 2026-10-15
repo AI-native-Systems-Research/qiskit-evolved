@@ -131,6 +131,7 @@ pub unsafe extern "C" fn qk_transpiler_pass_standalone_sabre_layout(
         Some(heuristic::DecayHeuristic::new(0.001, 5)),
         Some(10 * target.num_qubits.unwrap() as usize),
         1e-10,
+        true,
     );
     let (result, initial_layout, final_layout) = sabre_layout_and_routing(
         &mut dag,

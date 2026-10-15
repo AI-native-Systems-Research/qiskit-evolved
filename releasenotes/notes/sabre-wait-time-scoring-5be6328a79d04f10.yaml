@@ -1,0 +1,11 @@
+features_transpiler:
+  - |
+    SABRE routing now includes a small penalty for the estimated time a candidate
+    SWAP must wait for its physical qubits to become available. The estimate counts
+    each routed two-qubit SABRE node as one layer and each inserted SWAP as three
+    layers, with a penalty of 2.2e-5 distance units per layer added after decay.
+    This is enabled by default. For fine-grained control, the internal
+    ``qiskit._accelerate.sabre.Heuristic`` accepts ``wait_time=False`` to disable
+    the penalty. For example, a basic heuristic without the penalty can be passed
+    to :class:`.SabreSwap` as
+    ``Heuristic(wait_time=False).with_basic(1.0, SetScaling.Size)``.

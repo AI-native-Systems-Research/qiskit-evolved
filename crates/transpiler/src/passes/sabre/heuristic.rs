@@ -192,6 +192,7 @@ pub struct Heuristic {
     pub decay: Option<DecayHeuristic>,
     pub best_epsilon: f64,
     pub attempt_limit: usize,
+    pub wait_time: bool,
 }
 
 #[pymethods]
@@ -209,14 +210,18 @@ impl Heuristic {
     ///         disabled entirely, Sabre will enter an infinite loop.
     ///     best_epsilon (float): the floating-point epsilon to use when comparing scores to find
     ///         the best value.
+    ///     wait_time (bool): whether to penalize swaps whose wires become available later in the
+    ///         estimated two-qubit schedule. Defaults to ``True``. The penalty is added after
+    ///         decay, at 2.2e-5 distance units per layer of waiting.
     #[new]
-    #[pyo3(signature = (basic=None, lookahead=None, decay=None, attempt_limit=1000, best_epsilon=1e-10))]
+    #[pyo3(signature = (basic=None, lookahead=None, decay=None, attempt_limit=1000, best_epsilon=1e-10, wait_time=true))]
     pub fn new(
         basic: Option<BasicHeuristic>,
         lookahead: Option<LookaheadHeuristic>,
         decay: Option<DecayHeuristic>,
         attempt_limit: Option<usize>,
         best_epsilon: f64,
+        wait_time: bool,
     ) -> Self {
         Self {
             basic,
@@ -224,6 +229,7 @@ impl Heuristic {
             decay,
             best_epsilon,
             attempt_limit: attempt_limit.unwrap_or(usize::MAX),
+            wait_time,
         }
     }
 
@@ -234,6 +240,7 @@ impl Heuristic {
             self.decay,
             self.attempt_limit,
             self.best_epsilon,
+            self.wait_time,
         )
             .into_py_any(py)
     }
@@ -271,7 +278,7 @@ impl Heuristic {
     }
 
     pub fn __repr__(&self, py: Python) -> PyResult<Py<PyAny>> {
-        let fmt = "Heuristic(basic={!r}, lookahead={!r}, decay={!r}, attempt_limit={!r}, best_epsilon={!r})";
+        let fmt = "Heuristic(basic={!r}, lookahead={!r}, decay={!r}, attempt_limit={!r}, best_epsilon={!r}, wait_time={!r})";
         PyString::new(py, fmt)
             .call_method1(
                 "format",
@@ -281,6 +288,7 @@ impl Heuristic {
                     self.decay,
                     self.attempt_limit,
                     self.best_epsilon,
+                    self.wait_time,
                 ),
             )?
             .into_py_any(py)

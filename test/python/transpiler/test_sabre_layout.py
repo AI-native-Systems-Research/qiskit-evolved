@@ -99,7 +99,7 @@ class TestSabreLayout(QiskitTestCase):
         pass_.run(dag)
 
         layout = pass_.property_set["layout"]
-        self.assertEqual([layout[q] for q in circuit.qubits], [7, 8, 11, 12, 13, 6])
+        self.assertEqual([layout[q] for q in circuit.qubits], [1, 2, 5, 6, 7, 0])
 
     def test_6q_circuit_20q_coupling_with_partial(self):
         """Test finds layout for 6q circuit on 20q device."""
@@ -167,7 +167,7 @@ class TestSabreLayout(QiskitTestCase):
         pass_.run(dag)
 
         layout = pass_.property_set["layout"]
-        self.assertEqual([layout[q] for q in circuit.qubits], [7, 8, 11, 12, 13, 6])
+        self.assertEqual([layout[q] for q in circuit.qubits], [1, 2, 5, 6, 7, 0])
 
     def test_layout_with_classical_bits(self):
         """Test sabre layout with classical bits recreate from issue #8635."""
@@ -208,7 +208,7 @@ rz(0) q4835[1];
         self.assertIsInstance(res, QuantumCircuit)
         layout = res._layout.initial_layout
         self.assertEqual(
-            [layout[q] for q in qc.qubits], [4, 0, 12, 1, 16, 7, 21, 11, 26, 15, 3, 18, 10, 2]
+            [layout[q] for q in qc.qubits], [2, 0, 5, 1, 7, 3, 14, 6, 9, 8, 10, 11, 4, 12]
         )
 
     def test_layout_many_search_trials(self):
@@ -270,7 +270,7 @@ barrier q18585[5],q18585[2],q18585[8],q18585[3],q18585[6];
         self.assertIsInstance(res, QuantumCircuit)
         layout = res._layout.initial_layout
         self.assertEqual(
-            [layout[q] for q in qc.qubits], [13, 7, 18, 22, 17, 8, 14, 10, 11, 3, 16, 25, 23, 19]
+            [layout[q] for q in qc.qubits], [0, 12, 7, 3, 6, 11, 1, 10, 4, 9, 2, 5, 13, 8]
         )
 
     def test_support_var_with_rust_fastpath(self):
@@ -290,7 +290,7 @@ barrier q18585[5],q18585[2],q18585[8],q18585[3],q18585[6];
         out = SabreLayout(CouplingMap.from_line(8), seed=0, swap_trials=2, layout_trials=2)(qc)
 
         self.assertIsInstance(out, QuantumCircuit)
-        self.assertEqual(out.layout.initial_index_layout(), [2, 3, 4, 6, 5, 0, 1, 7])
+        self.assertEqual(out.layout.initial_index_layout(), [4, 3, 2, 5, 6, 0, 1, 7])
 
     def test_support_var_with_explicit_routing_pass(self):
         """Test that the logic works if an explicit routing pass is given."""
