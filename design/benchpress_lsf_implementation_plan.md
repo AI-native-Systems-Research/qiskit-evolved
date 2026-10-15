@@ -12,13 +12,13 @@ There are **150 LSF array elements / 600 invocations**, with **16 elements runni
 | --- | --- |
 | Current branch | `sabre-choose-best-swap-heuristics-benchpress`; continue implementation here. |
 | Planning tip inspected | `ff29e0f5650f4ae3f0bf4ddb86c97d1bd5a6a12c` (`pptx + benchpress support`). |
-| Baseline Qiskit | `1298f960b7e814cfcb6aa9338b548ec5c6d2b355`. |
-| Candidate Qiskit | `90ccaac29b2a547592e870797265007a128a02eb`. |
+| Baseline Qiskit | `--baseline-ref main` by default, resolved once to a commit at submission. |
+| Candidate Qiskit | `--candidate-ref HEAD` by default; select another branch such as `sabre-gate-fusion-aware-scoring` explicitly. |
 | Harness | Resolve `--harness-ref HEAD` once, after implementation is committed, and archive that exact code. |
 | Benchpress | `b695f30e83a32bac05b9b4d8e98d37ba9aae5236`. |
 | pytest-benchmark fork | `e33f5934cb462e719b13b8d352ced107f575b4f7`, installed for fixture compatibility with upstream calibration/repetition disabled; the adapter times the single call. |
 
-The planning commit changes only the plan and a presentation relative to the candidate. **Do not use current `HEAD^` as the baseline:** it is now the modified router. Further planning/implementation commits move that relationship again. Store baseline, candidate, and harness as independent identities. Validate `candidate^ == baseline` for this experiment; a different algorithm comparison requires explicit new pins.
+Store baseline, candidate, and harness as independent identities. Qiskit refs accept branches, fetched remote-tracking refs, tags, or commit hashes available in `--repo`; no parent relationship is required. Resolve each ref once, record its requested label, and archive the resolved commit. Builds and resumes use those fixed commits even when branch tips move. The original experiment's exact hashes remain documented in the comparison plan and can still be supplied explicitly.
 
 The launcher verifies its selected harness commit contains the runner and profiles. Refuse uncommitted changes to executed implementation/profile files; unrelated local `.gitignore` edits can remain outside the snapshot. Build Qiskit from the explicit source pins, and preserve the current development branch/history.
 
@@ -151,8 +151,8 @@ command -v bsub bjobs bhist bkill git rustup cc
 "$BP_PY" tools/benchpress/lsf/submit.py \
   --repo "$BP_REPO" \
   --harness-ref "$(git rev-parse HEAD)" \
-  --baseline-ref 1298f960b7e814cfcb6aa9338b548ec5c6d2b355 \
-  --candidate-ref 90ccaac29b2a547592e870797265007a128a02eb \
+  --baseline-ref main \
+  --candidate-ref sabre-gate-fusion-aware-scoring \
   --results-root "$BP_RESULTS" \
   --profile quality \
   --opt-levels 2 3 \
@@ -172,10 +172,10 @@ command -v bsub bjobs bhist bkill git rustup cc
 | --- | --- | --- |
 | `--repo PATH` | Required | Shared Git checkout with both Qiskit source pins and harness code. |
 | `--harness-ref REF` | `HEAD`, resolved once | Committed implementation to snapshot. |
-| `--baseline-ref`, `--candidate-ref` | Explicit hashes above | Algorithm source identities independent of harness history. |
+| `--baseline-ref`, `--candidate-ref` | `main`, `HEAD` | Branches, tags, or commits; resolve once and archive independently of harness history. |
 | `--results-root PATH` | Required | New absolute shared session directory; scheduler state lives beside it in `PATH.lsf`. |
 | `--profile` | `quality` | `quality`, `followup-quality`, or `full`; each measures quality and runtime in single-call mode. |
-| `--opt-levels` | `2 3` | Level list; optionally narrow to `2` or `3`. |
+| `--opt-levels` | `2 3` in every profile | Only L2 and L3 are supported; optionally narrow to `2` or `3`. |
 | `--panel-size` | `50` for quality | Entries before level expansion; full defaults to the eligible corpus. |
 | `--panel-file PATH` | Omitted; required for focused follow-ups | Frozen selected panel with identities and reasons; snapshot/hash it. |
 | `--seeds` | `0 1 2` for quality | Exact seed list. Follow-up defaults 0–9; full defaults 0–4. |
