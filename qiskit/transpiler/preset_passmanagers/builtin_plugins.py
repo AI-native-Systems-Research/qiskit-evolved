@@ -110,7 +110,7 @@ def _sabre_fusion_weight(config, optimization_level):
             return 0.0
         if not any(set(gates).issubset(names) for gates in ONE_QUBIT_EULER_BASIS_GATES.values()):
             return 0.0
-    return 0.25
+    return 1.0
 
 
 def _sabre_routing_heuristic(config, optimization_level):

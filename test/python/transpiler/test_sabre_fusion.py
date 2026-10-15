@@ -29,7 +29,7 @@ from qiskit.transpiler.preset_passmanagers import builtin_plugins
 from test import QiskitTestCase
 
 
-def heuristic(mode="decay", weight=0.25, width=3, attempt_limit=1000):
+def heuristic(mode="decay", weight=1.0, width=3, attempt_limit=1000):
     """An explicit internal heuristic for testing the scoring independently of presets."""
     result = Heuristic(attempt_limit=attempt_limit).with_basic(1.0, SetScaling.Constant)
     if mode != "basic":
@@ -44,12 +44,7 @@ class TestSabreFusion(QiskitTestCase):
 
     def test_block_endings_match_disabled_routing(self):
         """A blocker removes the credit and preserves disabled mode's seeded choices."""
-        theta = Parameter("theta")
         middles = [
-            lambda qc: qc.rzz(theta, 0, 1),
-            lambda qc: qc.rx(theta, 0),
-            lambda qc: qc.append(Instruction("blob", 2, 0, []), [0, 1]),
-            lambda qc: qc.append(Initialize([1, 0]), [0]),
             lambda qc: qc.barrier(0, 1),
             lambda qc: qc.delay(10, 0),
             lambda qc: qc.reset(0),
@@ -71,26 +66,38 @@ class TestSabreFusion(QiskitTestCase):
                     )
 
     def test_prefers_fusible_swap(self):
-        """Tied distance candidates favor the pair whose preceding gates can absorb a SWAP."""
+        """Tied distance candidates favor the pair whose preceding gates can absorb a SWAP.
+
+        Every operation on at most two qubits other than a directive, standard instruction or
+        control flow extends the block, including symbolic and opaque ones."""
+        theta = Parameter("theta")
+        block = QuantumCircuit(2)
+        block.rzz(0.3, 0, 1)
+        middles = {
+            None: None,
+            "numeric": lambda qc: qc.rzz(0.3, 0, 1),
+            "custom": lambda qc: qc.append(block.to_gate(), [0, 1]),
+            "symbolic": lambda qc: qc.rzz(theta, 0, 1),
+            "symbolic_1q": lambda qc: qc.rx(theta, 0),
+            "opaque": lambda qc: qc.append(Instruction("blob", 2, 0, []), [0, 1]),
+            "initialize": lambda qc: qc.append(Initialize([1, 0]), [0]),
+        }
         coupling = CouplingMap.from_line(3)
         for mode in ["basic", "lookahead", "decay"]:
-            for middle in [None, "numeric", "custom"]:
+            for name, middle in middles.items():
                 qc = QuantumCircuit(3)
                 qc.cx(0, 1)
-                if middle == "numeric":
-                    qc.rzz(0.3, 0, 1)
-                elif middle == "custom":
-                    block = QuantumCircuit(2)
-                    block.rzz(0.3, 0, 1)
-                    qc.append(block.to_gate(), [0, 1])
+                if middle is not None:
+                    middle(qc)
                 qc.cx(0, 2)
                 for seed in range(8):
-                    with self.subTest(mode=mode, middle=middle, seed=seed):
+                    with self.subTest(mode=mode, middle=name, seed=seed):
                         routed = SabreSwap(coupling, heuristic(mode), seed=seed, trials=1)(qc)
                         swap = next(inst for inst in routed.data if inst.operation.name == "swap")
                         self.assertEqual({routed.find_bit(q).index for q in swap.qubits}, {0, 1})
-                        self.assertTrue(Operator.from_circuit(routed).equiv(Operator(qc)))
-                        if middle is None:
+                        if name in (None, "numeric", "custom"):
+                            self.assertTrue(Operator.from_circuit(routed).equiv(Operator(qc)))
+                        if name is None:
                             fused = PassManager(
                                 [
                                     ConsolidateBlocks(basis_gates=["cx", "u"]),
@@ -107,7 +114,7 @@ class TestSabreFusion(QiskitTestCase):
         qc.h(0)
         for pair in [(1, 2), (1, 3), (2, 3), (1, 3)]:
             qc.cx(*pair)
-        for weight, swaps, cx in [(0.0, 1, 9), (0.25, 2, 8)]:
+        for weight, swaps, cx in [(0.0, 1, 9), (1.0, 2, 8)]:
             routed = SabreSwap(
                 CouplingMap.from_line(5), heuristic("lookahead", weight, 5), seed=0, trials=1
             )(qc)
@@ -133,7 +140,7 @@ class TestSabreFusion(QiskitTestCase):
         """The existing constructor stays compatible and pickling retains fusion."""
         enabled = heuristic()
         self.assertEqual(enabled, pickle.loads(pickle.dumps(enabled)))
-        self.assertIn("fusion_weight=0.25", repr(enabled))
+        self.assertIn("fusion_weight=1.0", repr(enabled))
         self.assertEqual(Heuristic().fusion_weight, 0.0)
         self.assertEqual(Heuristic(None, None, None, 20, 1e-8).fusion_weight, 0.0)
         for weight in [-1, float("nan"), float("inf"), -float("inf")]:
@@ -147,7 +154,7 @@ class TestSabreFusion(QiskitTestCase):
         for limit in [0, 1]:
             out = SabreSwap(coupling, heuristic(width=5, attempt_limit=limit), seed=2, trials=1)(qc)
             self.assertTrue(Operator.from_circuit(out).equiv(Operator(qc)))
-        for weight in [0.0, 0.25]:
+        for weight in [0.0, 1.0]:
             pass_ = SabreLayout(
                 coupling, seed=2, swap_trials=2, layout_trials=2, _fusion_weight=weight
             )
@@ -183,7 +190,7 @@ class TestSabreFusionPresets(QiskitTestCase):
                     config = PassManagerConfig(target=target, basis_gates=basis)
                     self.assertEqual(
                         builtin_plugins._sabre_fusion_weight(config, level),
-                        0.25 if compatible and level >= 2 else 0.0,
+                        1.0 if compatible and level >= 2 else 0.0,
                     )
         for options in [
             {"optimization_method": "external"},
@@ -271,7 +278,7 @@ class TestSabreFusionPresets(QiskitTestCase):
                             )
                         else:
                             weight = call.kwargs.get("_fusion_weight", 0.0)
-                        self.assertEqual(weight, 0.25 if level >= 2 else 0.0)
+                        self.assertEqual(weight, 1.0 if level >= 2 else 0.0)
 
     def test_transpile_executes_configured_routing(self):
         qc = random_circuit(5, 8, max_operands=2, seed=42)
@@ -295,5 +302,5 @@ class TestSabreFusionPresets(QiskitTestCase):
                 optimization_level=level,
                 callback=callback,
             )
-            self.assertEqual(seen, [0.25 if level >= 2 else 0.0])
+            self.assertEqual(seen, [1.0 if level >= 2 else 0.0])
             self.assertTrue(Operator.from_circuit(out).equiv(Operator(qc)))

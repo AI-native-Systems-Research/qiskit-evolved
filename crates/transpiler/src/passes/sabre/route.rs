@@ -736,10 +736,8 @@ impl State {
                     self.last_block[a] = (c > 0).then_some((b, c));
                     self.last_block[b] = (c > 0).then_some((a, c));
                 }
-                // Interaction-only layout graphs discard original indices. Conservatively
-                // close all blocks at a synchronization or control-flow boundary in that case.
-                _ if node.indices.is_empty() => self.last_block.fill(None),
-                // Full routing retains the indices, so only the affected qubits need clearing.
+                // Other nodes end the 2q blocks on their qubits.  Interaction-only layout graphs
+                // carry no DAG indices, so their boundary nodes leave the open blocks untouched.
                 _ => {
                     for index in &node.indices {
                         if let NodeType::Operation(inst) = &problem.dag[*index] {
@@ -1237,7 +1235,7 @@ mod fusion_tests {
     }
 
     #[test]
-    fn interaction_only_boundaries_in_both_directions() {
+    fn interaction_only_boundaries_keep_blocks_open() {
         for control_flow in [false, true] {
             let mut graph = DiGraph::new();
             let before = [graph.add_node(pair([0, 1])), graph.add_node(pair([2, 3]))];
@@ -1278,10 +1276,12 @@ mod fusion_tests {
                 };
                 let (state, _) = State::begin(problem, NLayout::generate_trivial_layout(4), 0);
                 for (q, partner) in [(0, 1), (1, 0), (2, 3), (3, 2)] {
-                    // Without clearing the boundary, both CX counts would accumulate to two.
+                    // Interaction-only graphs carry no DAG indices, so synchronization and
+                    // control-flow nodes have no qubits to close blocks on, and the CX counts on
+                    // either side of the boundary accumulate.
                     assert_eq!(
                         state.last_block[PhysicalQubit(q)],
-                        Some((PhysicalQubit(partner), 1))
+                        Some((PhysicalQubit(partner), 2))
                     );
                 }
             }
