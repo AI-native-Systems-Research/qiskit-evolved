@@ -28,7 +28,8 @@ from qiskit.circuit.random import random_circuit
 from qiskit.compiler.transpiler import transpile
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.providers.fake_provider import GenericBackendV2
-from qiskit.transpiler.passes import SabreSwap, CheckMap
+from qiskit.quantum_info import Operator
+from qiskit.transpiler.passes import SabreSwap, CheckMap, TrivialLayout, ApplyLayout
 from qiskit.transpiler.passes.routing.sabre_swap import Heuristic, SetScaling
 from qiskit.transpiler import CouplingMap, Layout, PassManager, Target, TranspilerError
 from qiskit import ClassicalRegister, QuantumRegister, QuantumCircuit
@@ -309,7 +310,8 @@ class TestSabreSwap(QiskitTestCase):
         self.assertEqual(last_h.qubits, first_measure.qubits)
         self.assertNotEqual(last_h.qubits, second_measure.qubits)
 
-    def test_no_infinite_loop(self):
+    @ddt.data(True, False)
+    def test_no_infinite_loop(self, wait_time):
         """Test that the 'release value' mechanisms allow SabreSwap to make progress even on
         circuits that get stuck in a stable local minimum of the lookahead parameters."""
         # This is an approximation to the "lookahead" heuristic described by the original Sabre
@@ -322,6 +324,8 @@ class TestSabreSwap(QiskitTestCase):
             # The basic heuristic scaling by size is the problematic bit.
             .with_basic(1.0, SetScaling.Size).with_lookahead([0.5], SetScaling.Size)
         )
+        if wait_time:
+            heuristic = heuristic.with_wait_time(2.2e-5)
         qc = looping_circuit(3, 1)
         qc.measure_all()
         coupling_map = CouplingMap.from_line(qc.num_qubits)
@@ -355,7 +359,7 @@ class TestSabreSwap(QiskitTestCase):
         out_results = sim.run(routed, shots=4096).result().get_counts()
         self.assertEqual(set(in_results), set(out_results))
 
-    @ddt.data("basic", "lookahead", "decay")
+    @ddt.data("basic", "lookahead", "decay", "wait_time")
     def test_deterministic(self, heuristic):
         """Test that the output of the SabreSwap pass is deterministic for a given random seed."""
         width = 40
@@ -385,6 +389,203 @@ class TestSabreSwap(QiskitTestCase):
 
         # Check that a re-run with the same seed produces the same circuit in the exact same order.
         self.assertEqual(normalize_nodes(dag_0), normalize_nodes(pass_0.run(dag)))
+
+    def _route_with_layout(self, circuit, coupling, heuristic, seed):
+        """Route a copy, retaining the initial and final logical-to-physical mappings."""
+        return PassManager(
+            [
+                TrivialLayout(coupling),
+                ApplyLayout(),
+                SabreSwap(coupling, heuristic, seed=seed, trials=1),
+            ]
+        ).run(circuit.copy())
+
+    def _assert_valid_unitary_route(self, reference, routed, coupling):
+        """Check the computation and physical constraints independently."""
+        self.assertEqual(routed.num_qubits, reference.num_qubits)
+        self.assertIsNotNone(routed.layout)
+        self.assertIsNotNone(routed.layout.initial_layout)
+        self.assertIsNotNone(routed.layout.final_layout)
+        self.assertEqual(Operator.from_circuit(routed), Operator.from_circuit(reference))
+        edges = set(coupling.get_edges())
+        for instruction in routed.data:
+            if instruction.operation._directive:
+                continue
+            self.assertLessEqual(instruction.operation.num_qubits, 2)
+            if instruction.operation.num_qubits == 2:
+                self.assertIn(
+                    tuple(routed.find_bit(qubit).index for qubit in instruction.qubits), edges
+                )
+
+    @ddt.data((4, 0), (4, 42), (2, 0), (2, 42))
+    @ddt.unpack
+    def test_wait_time_routing_preserves_unitary(self, width, seed):
+        """Wait-time scoring preserves phases, logical wire order, and connectivity."""
+        qc = QuantumCircuit(width)
+        qc.h(0)
+        qc.rz(0.37, width - 1)
+        qc.global_phase = 0.23
+        if width == 4:
+            for _ in range(4):
+                qc.cx(0, 1)
+            qc.cx(1, 3)
+        else:
+            qc.cx(0, 1)
+        coupling = CouplingMap.from_line(width)
+        decay = (
+            Heuristic(attempt_limit=10 * width)
+            .with_basic(1.0, SetScaling.Constant)
+            .with_lookahead([0.5 / width], SetScaling.Constant)
+            .with_decay(0.001, 5)
+        )
+        outputs = {}
+        for name, heuristic in [
+            ("decay", "decay"),
+            ("wait_time", "wait_time"),
+            ("zero_weight", decay.with_wait_time(0.0)),
+            ("large_weight", decay.with_wait_time(1e-3)),
+        ]:
+            with self.subTest(heuristic=name):
+                routed = self._route_with_layout(qc, coupling, heuristic, seed)
+                outputs[name] = routed
+                self._assert_valid_unitary_route(qc, routed, coupling)
+                if width == 4:
+                    self.assertGreater(routed.count_ops().get("swap", 0), 0)
+                    self.assertNotEqual(routed.layout.final_index_layout(), list(range(width)))
+                else:
+                    self.assertEqual(routed.count_ops().get("swap", 0), 0)
+
+        # A zero weight enables readiness tracking without changing the score or route.
+        self.assertEqual(outputs["zero_weight"].data, outputs["decay"].data)
+        self.assertEqual(
+            outputs["zero_weight"].layout.final_index_layout(),
+            outputs["decay"].layout.final_index_layout(),
+        )
+
+    def test_equal_score_swaps_prefer_idle_wires(self):
+        """Test that, with the wait-time heuristic, Sabre picks among equally scored swaps the one
+        whose qubits are free earliest in the two-qubit schedule, so the swap runs in parallel with
+        earlier gates."""
+        # On the line 0-1-2-3, qubit 1 is busy with a chain of gates when `cx(1, 3)` needs routing.
+        # Swapping on (1, 2) or on (2, 3) scores the same, but only (2, 3) is on idle qubits.
+        qc = QuantumCircuit(4)
+        for _ in range(4):
+            qc.cx(0, 1)
+        qc.cx(1, 3)
+        coupling = CouplingMap.from_line(4)
+        for seed in range(10):
+            routed = self._route_with_layout(qc, coupling, "wait_time", seed)
+            if seed == 0:
+                self._assert_valid_unitary_route(qc, routed, coupling)
+            self.assertEqual(routed.count_ops()["swap"], 1)
+            swap = next(inst for inst in routed.data if inst.operation.name == "swap")
+            self.assertEqual({routed.find_bit(q).index for q in swap.qubits}, {2, 3})
+            self.assertEqual(routed.depth(lambda inst: inst.operation.num_qubits == 2), 5)
+
+    def test_wire_ready_time_is_priced_against_lookahead(self):
+        """Test that the time a swap waits for its wires is a priced score term, not only a
+        tie-break: it outweighs a small lookahead difference, but not a large one."""
+        # On the line 0-1-2-3-4 with a spur 1-5, qubit 1 is busy for 20 layers (gates alternating
+        # with qubits 0 and 5) when `cx(1, 3)` needs routing.  Swapping on (1, 2) or on (2, 3)
+        # scores the same distance for `cx(1, 3)`, and the lookahead gate `cx(3, 4)` prefers (1, 2)
+        # by one unit of distance, but only (2, 3) can start right away, 20 layers earlier.
+        qc = QuantumCircuit(6)
+        for _ in range(10):
+            qc.cx(0, 1)
+            qc.cx(5, 1)
+        qc.cx(1, 3)
+        qc.cx(3, 4)
+        coupling = CouplingMap([[0, 1], [1, 2], [2, 3], [3, 4], [1, 5]])
+        coupling.make_symmetric()
+
+        def first_swap(lookahead_weight, seed, wait_time=2.2e-5, check_unitary=False):
+            heuristic = (
+                Heuristic(attempt_limit=60)
+                .with_basic(1.0, SetScaling.Constant)
+                .with_lookahead([lookahead_weight], SetScaling.Constant)
+            )
+            if wait_time is not None:
+                heuristic = heuristic.with_wait_time(wait_time)
+            routed = self._route_with_layout(qc, coupling, heuristic, seed)
+            if seed == 0 and check_unitary:
+                self._assert_valid_unitary_route(qc, routed, coupling)
+            swap = next(inst for inst in routed.data if inst.operation.name == "swap")
+            return {routed.find_bit(q).index for q in swap.qubits}
+
+        for seed in range(10):
+            # A lookahead unit worth less than 20 layers of waiting: the idle wires win.
+            self.assertEqual(first_swap(1e-4, seed), {2, 3})
+            # A lookahead unit worth more than 20 layers of waiting: lookahead still decides.
+            self.assertEqual(first_swap(0.5 / 6, seed), {1, 2})
+            # Check the weight is priced as written: 20 layers cost exactly 20 * 2.2e-5.
+            self.assertEqual(first_swap(20 * 2.2e-5 - 1e-6, seed, check_unitary=True), {2, 3})
+            self.assertEqual(first_swap(20 * 2.2e-5 + 1e-6, seed, check_unitary=True), {1, 2})
+            # A non-default weight is priced as configured too: 20 layers cost 20 * 1e-3.
+            self.assertEqual(first_swap(20 * 1e-3 - 1e-5, seed, wait_time=1e-3), {2, 3})
+            self.assertEqual(first_swap(20 * 1e-3 + 1e-5, seed, wait_time=1e-3), {1, 2})
+            # Without the component, the distance-only choice is restored even when the
+            # lookahead advantage is small.
+            self.assertEqual(first_swap(1e-4, seed, wait_time=None, check_unitary=True), {1, 2})
+
+    def test_ready_times_are_restored_after_release_valve(self):
+        """Test that the ready times advanced by swaps the release valve discards are rolled
+        back, and that only the forced swaps and the routed gate advance them, so the next
+        readiness-sensitive choice is priced from the real schedule."""
+        # `cx(0, 4)` is four hops apart on the line, so with ``attempt_limit=1`` the two greedy
+        # swaps can never route it and the release valve always fires: the greedy swaps are
+        # undone and `cx(0, 4)` is forced onto physical qubits (2, 3) by the swaps (0, 1), (1, 2)
+        # and (4, 3).  Only those swaps and the gate may advance the ready times, so afterwards
+        # physical qubit 3 is busy for 7 layers and qubit 4 for 3.  `cx(4, 5)` is then routed by
+        # a swap on (3, 4) or on (4, 5), which score the same distance; the lookahead gate
+        # `cx(4, 7)` prefers (3, 4) by one unit, and the wait-time term prefers (4, 5) by exactly
+        # four layers.  Where the routed `cx(4, 5)` lands tells which swap was chosen.
+        qc = QuantumCircuit(8)
+        qc.cx(0, 4)
+        qc.cx(4, 5)
+        qc.cx(4, 7)
+        coupling = CouplingMap.from_line(8)
+        weight = 1e-3
+
+        def routed_cx_qubits(lookahead_weight, seed):
+            heuristic = (
+                Heuristic(attempt_limit=1)
+                .with_basic(1.0, SetScaling.Constant)
+                .with_lookahead([lookahead_weight], SetScaling.Constant)
+                .with_wait_time(weight)
+            )
+            routed = self._route_with_layout(qc, coupling, heuristic, seed)
+            if seed == 0:
+                self._assert_valid_unitary_route(qc, routed, coupling)
+            return [
+                {routed.find_bit(q).index for q in inst.qubits}
+                for inst in routed.data
+                if inst.operation.name == "cx"
+            ]
+
+        for seed in range(10):
+            # A lookahead unit worth more than four layers of waiting: the busier (3, 4) wins.
+            first, second, _ = routed_cx_qubits(4 * weight + 1e-5, seed)
+            self.assertEqual(first, {2, 3})
+            self.assertEqual(second, {4, 5})
+            # A lookahead unit worth less than four layers of waiting: the idle (4, 5) wins.
+            first, second, _ = routed_cx_qubits(4 * weight - 1e-5, seed)
+            self.assertEqual(first, {2, 3})
+            self.assertEqual(second, {3, 4})
+
+    def test_wait_time_heuristic_serialization(self):
+        """The wait-time component survives builders, pickling and copying."""
+        heuristic = (
+            Heuristic()
+            .with_basic(1.0, SetScaling.Constant)
+            .with_lookahead([0.1], SetScaling.Constant)
+            .with_decay(0.001, 5)
+            .with_wait_time(2.2e-5)
+        )
+        self.assertEqual(pickle.loads(pickle.dumps(heuristic)), heuristic)
+        self.assertEqual(deepcopy(heuristic), heuristic)
+        self.assertIn("wait_time=WaitTimeHeuristic(weight=2.2e-05)", repr(heuristic))
+        self.assertIn("wait_time=None", repr(Heuristic()))
+        self.assertNotEqual(Heuristic(), Heuristic().with_wait_time(2.2e-5))
 
     def test_rejects_too_many_qubits(self):
         """Test that a sensible Python-space error message is emitted if the DAG has an incorrect
