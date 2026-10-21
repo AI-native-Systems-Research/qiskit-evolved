@@ -1,6 +1,6 @@
 python3.12 tools/benchpress/lsf/submit.py \
   --repo "$PWD" \
   --baseline-ref main \
-  --candidate-ref sabre-gate-fusion-aware-scoring \
-  --results-root "$PWD/benchpress-results/main-vs-fusion_after_fix" \
-  --profile quality --opt-levels 2 3 
+  --candidate-ref sabre-wait-time-aware-swap-scoring \
+  --results-root "$PWD/benchpress-results/main-vs-wait-time-aware" \
+  --profile quality
