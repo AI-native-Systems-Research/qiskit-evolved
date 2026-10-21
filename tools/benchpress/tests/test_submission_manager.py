@@ -83,6 +83,24 @@ def test_default_branch_comparison_dry_run(tmp_path, capsys):
     assert preview["invocations"] == 600
     assert not root.exists()
     assert not state_dir(root).exists()
+    assert config["skip_candidate_unit_tests"] is False
+
+
+def test_skip_candidate_unit_tests_is_recorded(tmp_path, capsys):
+    repo, _baseline, _candidate = committed_repo(tmp_path)
+    root = tmp_path / "results"
+    main(
+        [
+            "--repo",
+            str(repo),
+            "--results-root",
+            str(root),
+            "--skip-candidate-unit-tests",
+            "--dry-run",
+        ]
+    )
+    config = json.loads(capsys.readouterr().out)["configuration"]
+    assert config["skip_candidate_unit_tests"] is True
 
 
 def test_diverged_branches_are_pinned_before_archiving(tmp_path):

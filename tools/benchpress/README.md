@@ -53,6 +53,7 @@ Run `submit.py --help` for all arguments. Resource, queue, timeout, and output a
 | `--benchpress-source PATH` | Local Git mirror containing the pinned Benchpress commit; archive before submission instead of fetching on the build node. |
 | `--benchmark-source PATH` | Local Git mirror containing the pinned pytest-benchmark fork; archive before submission. |
 | `--build-cache-root PATH` | Optional shared cache of release wheels, locked and keyed by source, platform/ABI, toolchain, build lock, Cargo lock, and adapter hash. Cache hits verify wheel hashes. Environments are always created at their final session paths. |
+| `--skip-candidate-unit-tests` | Skip the candidate's affected Qiskit unit tests during build validation, e.g. when changing a default shifts seed-pinned layout expectations. The baseline tests, semantic/reproducibility, collection, and smoke checks still run; the report notes the skip. |
 | `--panel-file PATH` | JSONL selection using collected `node_id` and `selection_reason`; optional input hashes must match. Set `--panel-size` to match a custom quality panel. |
 | `--profile followup-quality` | Requires an explicit panel file; defaults to ten seeds. Reports remain separate from the main campaign. |
 | `--profile full --campaign-limit-min N` | All device-compatible corpus entries; five seeds, 900-second children, 3900-second element limit, and 1:10 worker wall limit. Explicit campaign budget required. |

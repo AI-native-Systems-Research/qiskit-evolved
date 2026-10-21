@@ -350,21 +350,27 @@ def prepare(root):
             shutil.copytree(root / "src" / revision / "test", tests / "test")
             test_env = clean_env()
             test_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-            logged(
-                [
-                    python,
-                    "-m",
-                    "pytest",
-                    "-o",
-                    "addopts=",
-                    "--rootdir",
+            if revision == "candidate" and config.get("skip_candidate_unit_tests"):
+                atomic_text(
+                    validation / f"{revision}-affected-tests.log",
+                    "Skipped: --skip-candidate-unit-tests was set at submission.\n",
+                )
+            else:
+                logged(
+                    [
+                        python,
+                        "-m",
+                        "pytest",
+                        "-o",
+                        "addopts=",
+                        "--rootdir",
+                        tests,
+                        *[tests / "test/python" / name for name in AFFECTED],
+                    ],
+                    validation / f"{revision}-affected-tests.log",
                     tests,
-                    *[tests / "test/python" / name for name in AFFECTED],
-                ],
-                validation / f"{revision}-affected-tests.log",
-                tests,
-                test_env,
-            )
+                    test_env,
+                )
             semantic_check(python, validation / f"{revision}-semantic.log", root)
             for level in config["opt_levels"]:
                 work = validation / f"collect-{revision}-{level}"

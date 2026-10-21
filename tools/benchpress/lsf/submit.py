@@ -79,6 +79,12 @@ def parser():
     result.add_argument("--build-wall", default="6:00")
     result.add_argument("--manager-wall", default="24:00")
     result.add_argument("--report-wall", default="0:30")
+    result.add_argument(
+        "--skip-candidate-unit-tests",
+        action="store_true",
+        help="Skip the candidate's affected Qiskit unit tests during build validation "
+        "(e.g. when a default change shifts seed-pinned expectations); recorded in the report",
+    )
     result.add_argument("--dry-run", action="store_true")
     result.add_argument("--resume", action="store_true")
     result.add_argument("--log-level", choices=("INFO", "DEBUG"), default="INFO")

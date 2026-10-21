@@ -673,6 +673,7 @@ def compare(root):
             "groups": summaries,
             "retry_invocations": len(retries),
             "retry_selection": config["retry_selection"],
+            "skip_candidate_unit_tests": bool(config.get("skip_candidate_unit_tests")),
         }
         atomic_json(results / "summary.json", summary)
         requested_refs = config.get("requested_refs", {})
@@ -689,6 +690,14 @@ def compare(root):
             "",
             sources + ".",
             "",
+            *(
+                [
+                    "Candidate affected Qiskit unit tests were skipped (`--skip-candidate-unit-tests`); semantic, collection, and smoke checks still ran.",
+                    "",
+                ]
+                if summary["skip_candidate_unit_tests"]
+                else []
+            ),
             f"Coverage: {summary['paired']}/{len(pairs)} paired seeds; {summary['complete_cases']}/{len(cases)} complete cases; {len(runs)} scheduled first-attempt invocations.",
             "",
             f"Runtime coverage: {summary['runtime_paired']}/{len(pairs)} paired seeds; {summary['runtime_complete_cases']}/{len(cases)} complete cases; {summary['runtime_invocations']}/{len(runs)} measured passing invocations.",
